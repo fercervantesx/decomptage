@@ -8,6 +8,9 @@ struct ChatPaneView: View {
     var body: some View {
         VStack(spacing: 0) {
             header
+            if viewModel.contextCapture.secretsDetected {
+                secretsBanner
+            }
             Divider()
             messageList
             Divider()
@@ -123,6 +126,26 @@ struct ChatPaneView: View {
         .sheet(isPresented: $showSettings) {
             CopilotSettingsView()
         }
+    }
+
+    // MARK: - Secrets Banner
+
+    private var secretsBanner: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.shield")
+                .font(.system(size: 10))
+                .foregroundStyle(.orange)
+            Text("Secrets detected — auto-sharing paused.")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("⌘⇧K to share manually")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(Color.orange.opacity(0.08))
     }
 
     // MARK: - Messages

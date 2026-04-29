@@ -34,7 +34,7 @@ final class ChatViewModel: ObservableObject {
     }
 
     private let bridge = SidecarBridge.shared
-    private let contextCapture = ContextCapture()
+    let contextCapture = ContextCapture()
 
     /// Set this to the focused terminal surface so context capture can read it.
     /// Typically wired from the TerminalView's @FocusedValue.

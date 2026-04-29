@@ -8,7 +8,7 @@ import os
 /// diff against the last known state, and send deltas via `context.push`.
 ///
 /// Phase 2: grid-diff only. Phase 3+ will add OSC 133 hooks from Zig core.
-final class ContextCapture {
+final class ContextCapture: ObservableObject {
     private let logger = Logger(subsystem: "com.fercervantes.decomptage", category: "ContextCapture")
     private let bridge: SidecarBridge
 
@@ -17,8 +17,18 @@ final class ContextCapture {
     private var isEnabled: Bool = true
     private var isPaused: Bool = false  // pause during alt-screen
 
+    /// Published so the chat pane can show a warning banner
+    @Published var secretsDetected: Bool = false
+
     /// Debounce interval in seconds
     private let debounceInterval: TimeInterval = 0.5
+
+    /// Patterns that indicate secrets in terminal output
+    private static let secretPatterns: [String] = [
+        "password", "passwd", "token", "api_key", "api-key", "apikey",
+        "secret", "credential", "private_key", "private-key",
+        "AWS_SECRET", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+    ]
 
     /// Surface provider — returns the currently focused surface for reading
     var surfaceProvider: (() -> ghostty_surface_t?)?
@@ -113,6 +123,19 @@ final class ContextCapture {
 
         guard !delta.isEmpty else { return }
 
+        // Check for secrets before sending
+        if containsSecrets(delta) {
+            DispatchQueue.main.async {
+                self.secretsDetected = true
+            }
+            logger.warning("secrets detected in terminal output — auto-context paused")
+            return
+        }
+
+        DispatchQueue.main.async {
+            self.secretsDetected = false
+        }
+
         bridge.send(
             method: "context.push",
             params: [
@@ -120,6 +143,24 @@ final class ContextCapture {
                 "payload": ["text": delta],
             ]
         )
+    }
+
+    private func containsSecrets(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        for pattern in Self.secretPatterns {
+            let patLower = pattern.lowercased()
+            if lower.contains(patLower) {
+                // Only flag if it looks like an assignment (key=value or key: value or export KEY)
+                for line in text.components(separatedBy: "\n") {
+                    let lineLower = line.lowercased()
+                    if lineLower.contains(patLower) &&
+                       (line.contains("=") || line.contains("export ") || line.contains(": ")) {
+                        return true
+                    }
+                }
+            }
+        }
+        return false
     }
 
     private func readVisibleScreen(surface: ghostty_surface_t) -> String {
