@@ -12,6 +12,7 @@ use crate::rpc::{Notification, Request, Response};
 pub async fn handle_connection(stream: UnixStream) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
+    let mut context_buffer: Vec<String> = Vec::new();
 
     info!("client connected");
 
@@ -37,9 +38,22 @@ pub async fn handle_connection(stream: UnixStream) {
                     json!({
                         "session_id": uuid::Uuid::new_v4().to_string(),
                         "providers": get_available_providers(),
-                        "features": ["attachments", "streaming"]
+                        "features": ["attachments", "streaming", "context"]
                     }),
                 );
+                let _ = send_line(&mut writer, &resp).await;
+            }
+            "context.push" => {
+                if let Some(payload) = req.params.get("payload") {
+                    if let Some(text) = payload.get("text").and_then(|t| t.as_str()) {
+                        // Keep a rolling buffer of recent context (max 10 entries, ~256KB)
+                        context_buffer.push(text.to_string());
+                        if context_buffer.len() > 10 {
+                            context_buffer.remove(0);
+                        }
+                    }
+                }
+                let resp = Response::success(req.id, json!({"status": "ok"}));
                 let _ = send_line(&mut writer, &resp).await;
             }
             "chat.send" => {
@@ -49,7 +63,9 @@ pub async fn handle_connection(stream: UnixStream) {
                 );
                 let _ = send_line(&mut writer, &resp).await;
 
-                handle_chat_send(&req.params, &mut writer).await;
+                handle_chat_send(&req.params, &context_buffer, &mut writer).await;
+                // Clear context after use so it doesn't repeat
+                context_buffer.clear();
             }
             _ => {
                 let resp = Response::error(
@@ -67,6 +83,7 @@ pub async fn handle_connection(stream: UnixStream) {
 
 async fn handle_chat_send(
     params: &Value,
+    context_buffer: &[String],
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) {
     let api_key = match std::env::var("ANTHROPIC_API_KEY") {
@@ -88,7 +105,19 @@ async fn handle_chat_send(
         .to_string();
 
     let messages = parse_messages(params);
-    let system = params.get("system").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let base_system = params.get("system").and_then(|v| v.as_str()).unwrap_or(
+        "You are a terminal copilot. You see what the user is doing in their terminal and help them. Be concise and practical. When suggesting commands, use the suggest_command tool or put them in ```sh code blocks."
+    );
+
+    let system = if context_buffer.is_empty() {
+        Some(base_system.to_string())
+    } else {
+        let context = context_buffer.join("\n---\n");
+        Some(format!(
+            "{}\n\n<terminal_context>\nRecent terminal output:\n{}\n</terminal_context>",
+            base_system, context
+        ))
+    };
 
     let provider = AnthropicProvider::new(api_key);
 
