@@ -68,6 +68,10 @@ final class ChatViewModel: ObservableObject {
     private var lastAutoCommentTime: Date = .distantPast
     private let autoCommentCooldown: TimeInterval = 30.0
 
+    /// Auto-commenting only activates after the user sends their first message.
+    /// Until then, the copilot stays silent — no unsolicited comments on startup.
+    private var userHasInteracted: Bool = false
+
     func connect() {
         bridge.start()
         fetchProviders()
@@ -88,6 +92,7 @@ final class ChatViewModel: ObservableObject {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
+        userHasInteracted = true
         inputText = ""
         error = nil
 
@@ -125,7 +130,7 @@ final class ChatViewModel: ObservableObject {
 
     private func scheduleAutoComment() {
         autoCommentTimer?.invalidate()
-        guard autoComment, !isStreaming else { return }
+        guard autoComment, !isStreaming, userHasInteracted else { return }
 
         // Enforce cooldown — don't auto-comment more than once per 30s
         let timeSinceLastComment = Date().timeIntervalSince(lastAutoCommentTime)
