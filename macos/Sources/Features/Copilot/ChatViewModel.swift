@@ -68,9 +68,10 @@ final class ChatViewModel: ObservableObject {
     private var lastAutoCommentTime: Date = .distantPast
     private let autoCommentCooldown: TimeInterval = 30.0
 
-    /// Auto-commenting only activates after the user sends their first message.
-    /// Until then, the copilot stays silent — no unsolicited comments on startup.
-    private var userHasInteracted: Bool = false
+    /// Auto-commenting only activates after the first terminal context push
+    /// (i.e., the user typed something and the screen changed). Silent during
+    /// shell startup / init noise.
+    private var terminalHasActivity: Bool = false
 
     func connect() {
         bridge.start()
@@ -92,7 +93,6 @@ final class ChatViewModel: ObservableObject {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
-        userHasInteracted = true
         inputText = ""
         error = nil
 
@@ -130,7 +130,15 @@ final class ChatViewModel: ObservableObject {
 
     private func scheduleAutoComment() {
         autoCommentTimer?.invalidate()
-        guard autoComment, !isStreaming, userHasInteracted else { return }
+
+        // Skip the very first context push (shell init noise).
+        // Activate on the second push onward — that means the user has typed.
+        if !terminalHasActivity {
+            terminalHasActivity = true
+            return
+        }
+
+        guard autoComment else { return }
 
         // Enforce cooldown — don't auto-comment more than once per 30s
         let timeSinceLastComment = Date().timeIntervalSince(lastAutoCommentTime)
