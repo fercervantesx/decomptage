@@ -215,6 +215,24 @@ async fn handle_chat_send(
             .unwrap_or(4096) as u32,
     };
 
+    // Debug: log the full request if DECOMPTAGE_DEBUG=1
+    if std::env::var("DECOMPTAGE_DEBUG").unwrap_or_default() == "1" {
+        tracing::info!("--- chat.send debug ---");
+        tracing::info!("provider: {}", provider_id);
+        tracing::info!("model: {}", req.model);
+        tracing::info!("system: {}", req.system.as_deref().unwrap_or("(none)"));
+        for (i, msg) in req.messages.iter().enumerate() {
+            let content_preview: String = msg.content.iter().map(|p| match p {
+                ContentPart::Text { text } => {
+                    if text.len() > 200 { format!("{}...", &text[..200]) } else { text.clone() }
+                }
+                ContentPart::Image { .. } => "[image]".to_string(),
+            }).collect::<Vec<_>>().join(" ");
+            tracing::info!("  msg[{}] role={} content={}", i, msg.role, content_preview);
+        }
+        tracing::info!("--- end debug ---");
+    }
+
     match provider.chat_stream(req).await {
         Ok(mut stream) => {
             let mut codeblock = CodeblockDetector::new();
