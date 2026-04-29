@@ -1,4 +1,8 @@
 pub mod anthropic;
+pub mod bedrock;
+pub mod gemini;
+pub mod ollama;
+pub mod openai;
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;

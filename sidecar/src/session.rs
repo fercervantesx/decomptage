@@ -6,6 +6,9 @@ use tokio::net::unix::OwnedWriteHalf;
 use tracing::{info, warn};
 
 use crate::provider::anthropic::AnthropicProvider;
+use crate::provider::gemini::GeminiProvider;
+use crate::provider::ollama::OllamaProvider;
+use crate::provider::openai::OpenAIProvider;
 use crate::provider::{ChatEvent, ChatMessage, ChatRequest, ContentPart, Provider};
 use crate::rpc::{Notification, Request, Response};
 
@@ -86,12 +89,63 @@ async fn handle_chat_send(
     context_buffer: &[String],
     writer: &mut tokio::net::unix::OwnedWriteHalf,
 ) {
-    let api_key = match std::env::var("ANTHROPIC_API_KEY") {
-        Ok(k) => k,
-        Err(_) => {
+    let provider_id = params
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("anthropic");
+
+    let provider: Box<dyn Provider> = match provider_id {
+        "anthropic" => {
+            let key = match std::env::var("ANTHROPIC_API_KEY") {
+                Ok(k) => k,
+                Err(_) => {
+                    let notif = Notification {
+                        method: "chat.error",
+                        params: json!({"message": "ANTHROPIC_API_KEY not set"}),
+                    };
+                    let _ = send_line(writer, &notif).await;
+                    return;
+                }
+            };
+            Box::new(AnthropicProvider::new(key))
+        }
+        "openai" => {
+            let key = match std::env::var("OPENAI_API_KEY") {
+                Ok(k) => k,
+                Err(_) => {
+                    let notif = Notification {
+                        method: "chat.error",
+                        params: json!({"message": "OPENAI_API_KEY not set"}),
+                    };
+                    let _ = send_line(writer, &notif).await;
+                    return;
+                }
+            };
+            Box::new(OpenAIProvider::new(key))
+        }
+        "gemini" => {
+            let key = match std::env::var("GEMINI_API_KEY") {
+                Ok(k) => k,
+                Err(_) => {
+                    let notif = Notification {
+                        method: "chat.error",
+                        params: json!({"message": "GEMINI_API_KEY not set"}),
+                    };
+                    let _ = send_line(writer, &notif).await;
+                    return;
+                }
+            };
+            Box::new(GeminiProvider::new(key))
+        }
+        "ollama" => {
+            let url = std::env::var("OLLAMA_URL")
+                .unwrap_or_else(|_| "http://localhost:11434".to_string());
+            Box::new(OllamaProvider::with_url(url))
+        }
+        _ => {
             let notif = Notification {
                 method: "chat.error",
-                params: json!({"message": "ANTHROPIC_API_KEY not set"}),
+                params: json!({"message": format!("unknown provider: {}", provider_id)}),
             };
             let _ = send_line(writer, &notif).await;
             return;
@@ -101,7 +155,13 @@ async fn handle_chat_send(
     let model = params
         .get("model")
         .and_then(|v| v.as_str())
-        .unwrap_or("claude-sonnet-4-6")
+        .unwrap_or(match provider_id {
+            "anthropic" => "claude-sonnet-4-6",
+            "openai" => "gpt-4o",
+            "gemini" => "gemini-2.5-flash",
+            "ollama" => "llama3.3",
+            _ => "unknown",
+        })
         .to_string();
 
     let messages = parse_messages(params);
@@ -118,8 +178,6 @@ async fn handle_chat_send(
             base_system, context
         ))
     };
-
-    let provider = AnthropicProvider::new(api_key);
 
     let req = ChatRequest {
         model,
@@ -204,7 +262,37 @@ fn get_available_providers() -> Value {
             "id": "anthropic",
             "models": ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
             "streaming": true,
-            "vision": true
+            "vision": true,
+            "configured": std::env::var("ANTHROPIC_API_KEY").is_ok()
+        },
+        {
+            "id": "openai",
+            "models": ["gpt-4o", "gpt-4o-mini", "o3"],
+            "streaming": true,
+            "vision": true,
+            "configured": std::env::var("OPENAI_API_KEY").is_ok()
+        },
+        {
+            "id": "gemini",
+            "models": ["gemini-2.5-pro", "gemini-2.5-flash"],
+            "streaming": true,
+            "vision": true,
+            "configured": std::env::var("GEMINI_API_KEY").is_ok()
+        },
+        {
+            "id": "ollama",
+            "models": ["llama3.3", "qwen2.5-coder", "mistral"],
+            "streaming": true,
+            "vision": false,
+            "configured": true
+        },
+        {
+            "id": "bedrock",
+            "models": ["anthropic.claude-sonnet-4-6-20250514-v1:0", "meta.llama3-3-70b-instruct-v1:0"],
+            "streaming": true,
+            "vision": true,
+            "configured": false,
+            "note": "stub — requires aws-sdk-bedrockruntime"
         }
     ])
 }
