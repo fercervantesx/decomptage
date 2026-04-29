@@ -80,6 +80,24 @@ final class ContextCapture {
         let current = readVisibleScreen(surface: surface)
         guard !current.isEmpty, current != lastSnapshot else { return }
 
+        // Alt-screen heuristic: if >80% of lines changed at once, it's likely
+        // a TUI (vim, less, top). Suppress to avoid flooding the LLM.
+        if !lastSnapshot.isEmpty {
+            let oldLines = lastSnapshot.components(separatedBy: "\n")
+            let newLines = current.components(separatedBy: "\n")
+            let totalLines = max(oldLines.count, newLines.count)
+            if totalLines > 5 {
+                let oldSet = Set(oldLines)
+                let changedCount = newLines.filter { !oldSet.contains($0) }.count
+                let changeRatio = Double(changedCount) / Double(totalLines)
+                if changeRatio > 0.8 {
+                    // Likely alt-screen entered or exited — skip this tick
+                    lastSnapshot = current
+                    return
+                }
+            }
+        }
+
         // Compute a simple diff: new lines added since last snapshot
         let delta: String
         if lastSnapshot.isEmpty {

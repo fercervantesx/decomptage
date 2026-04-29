@@ -3818,6 +3818,21 @@ term: []const u8 = "xterm-ghostty",
 /// `chat_toggle` keybind.
 @"copilot-collapsed": bool = false,
 
+/// Whether to automatically capture terminal output via screen
+/// diffing and send it to the copilot as context. When `false`,
+/// only manual sharing (via keybind) sends context.
+@"copilot-context-auto": bool = true,
+
+/// The debounce interval in milliseconds for automatic context
+/// capture. Lower values mean more frequent updates (and more
+/// API usage). Clamped to [100, 5000].
+@"copilot-context-debounce-ms": u32 = 500,
+
+/// Whether to suppress automatic context capture when the terminal
+/// is in alternate screen mode (vim, less, top, etc). Recommended
+/// to leave enabled.
+@"copilot-context-pause-alt-screen": bool = true,
+
 /// This is set by the CLI parser for deinit.
 _arena: ?ArenaAllocator = null,
 
