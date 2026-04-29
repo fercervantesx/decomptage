@@ -1,6 +1,8 @@
 mod attachments;
 mod codeblock;
+mod history;
 mod provider;
+mod redact;
 mod rpc;
 mod session;
 

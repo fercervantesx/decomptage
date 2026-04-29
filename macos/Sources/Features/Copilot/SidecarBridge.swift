@@ -32,16 +32,38 @@ final class SidecarBridge: ObservableObject {
 
     private init() {}
 
+    private var reconnectAttempt = 0
+    private var reconnectTimer: Timer?
+    private var shouldReconnect = true
+
     // MARK: - Lifecycle
 
     func start() {
+        shouldReconnect = true
         ensureSidecarRunning()
         connectToSocket()
     }
 
     func stop() {
+        shouldReconnect = false
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
         disconnect()
         terminateSidecar()
+    }
+
+    private func scheduleReconnect() {
+        guard shouldReconnect else { return }
+        reconnectAttempt += 1
+        let delay = min(Double(reconnectAttempt) * 0.5, 5.0) // 0.5s, 1s, 1.5s, ... cap at 5s
+        logger.info("scheduling reconnect in \(delay)s (attempt \(self.reconnectAttempt))")
+
+        reconnectTimer?.invalidate()
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            self.ensureSidecarRunning()
+            self.connectToSocket()
+        }
     }
 
     // MARK: - Sidecar Process
@@ -158,6 +180,7 @@ final class SidecarBridge: ObservableObject {
         output.open()
 
         DispatchQueue.main.async { self.isConnected = true }
+        reconnectAttempt = 0
         logger.info("connected to sidecar")
 
         // Start reading in background
@@ -201,7 +224,10 @@ final class SidecarBridge: ObservableObject {
                 }
             }
 
-            DispatchQueue.main.async { self.isConnected = false }
+            DispatchQueue.main.async {
+                self.isConnected = false
+                self.scheduleReconnect()
+            }
         }
     }
 
