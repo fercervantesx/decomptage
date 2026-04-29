@@ -3,6 +3,7 @@ import SwiftUI
 struct ChatPaneView: View {
     @ObservedObject var layout: ChatLayout
     @StateObject private var viewModel = ChatViewModel()
+    @FocusedValue(\.ghosttySurfaceView) private var focusedSurface
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,6 +23,9 @@ struct ChatPaneView: View {
         .accessibilityLabel("Copilot chat pane")
         .onAppear {
             viewModel.connect()
+        }
+        .onChange(of: focusedSurface) { newSurface in
+            viewModel.focusedSurface = newSurface?.surface
         }
     }
 

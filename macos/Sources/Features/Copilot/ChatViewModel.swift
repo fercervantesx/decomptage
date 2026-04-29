@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import GhosttyKit
 
 struct ChatMessage: Identifiable {
     let id = UUID()
@@ -33,6 +34,17 @@ final class ChatViewModel: ObservableObject {
     }
 
     private let bridge = SidecarBridge.shared
+    private let contextCapture = ContextCapture()
+
+    /// Set this to the focused terminal surface so context capture can read it.
+    /// Typically wired from the TerminalView's @FocusedValue.
+    var focusedSurface: ghostty_surface_t? {
+        didSet {
+            contextCapture.surfaceProvider = { [weak self] in
+                self?.focusedSurface
+            }
+        }
+    }
 
     init() {
         self.selectedProvider = UserDefaults.standard.string(forKey: "decomptage.selectedProvider") ?? "anthropic"
@@ -48,6 +60,7 @@ final class ChatViewModel: ObservableObject {
     func connect() {
         bridge.start()
         fetchProviders()
+        contextCapture.start()
     }
 
     func clearConversation() {
