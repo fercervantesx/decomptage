@@ -1,3 +1,4 @@
+mod codeblock;
 mod provider;
 mod rpc;
 mod session;

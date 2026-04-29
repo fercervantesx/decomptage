@@ -5,6 +5,7 @@ use tokio::net::UnixStream;
 use tokio::net::unix::OwnedWriteHalf;
 use tracing::{info, warn};
 
+use crate::codeblock::CodeblockDetector;
 use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::gemini::GeminiProvider;
 use crate::provider::ollama::OllamaProvider;
@@ -191,12 +192,29 @@ async fn handle_chat_send(
 
     match provider.chat_stream(req).await {
         Ok(mut stream) => {
+            let mut codeblock = CodeblockDetector::new();
+
             while let Some(event) = stream.next().await {
                 let notif = match &event {
-                    ChatEvent::Delta { text } => Notification {
-                        method: "chat.delta",
-                        params: json!({"text": text}),
-                    },
+                    ChatEvent::Delta { text } => {
+                        // Feed into codeblock detector
+                        if let Some(command) = codeblock.feed(text) {
+                            let cmd_notif = Notification {
+                                method: "chat.suggested_command",
+                                params: json!({
+                                    "command": command,
+                                    "explanation": "Detected from code block",
+                                    "source": "codeblock_detected"
+                                }),
+                            };
+                            let _ = send_line(writer, &cmd_notif).await;
+                        }
+
+                        Notification {
+                            method: "chat.delta",
+                            params: json!({"text": text}),
+                        }
+                    }
                     ChatEvent::Done {
                         input_tokens,
                         output_tokens,
@@ -213,7 +231,7 @@ async fn handle_chat_send(
                         explanation,
                     } => Notification {
                         method: "chat.suggested_command",
-                        params: json!({"command": command, "explanation": explanation}),
+                        params: json!({"command": command, "explanation": explanation, "source": "tool_call"}),
                     },
                 };
                 if send_line(writer, &notif).await.is_err() {

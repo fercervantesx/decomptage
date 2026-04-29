@@ -171,6 +171,8 @@ private struct MessageBubble: View {
 private struct SuggestedCommandCard: View {
     let command: String
 
+    @FocusedValue(\.ghosttySurfaceView) private var focusedSurface
+
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "terminal")
@@ -193,6 +195,16 @@ private struct SuggestedCommandCard: View {
             }
             .buttonStyle(.plain)
             .help("Copy command")
+
+            Button {
+                guard let surface = focusedSurface?.surface else { return }
+                CommandInsertion.insert(command: command, into: surface)
+            } label: {
+                Image(systemName: "arrow.right.circle")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.plain)
+            .help("Insert into terminal (→)")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
