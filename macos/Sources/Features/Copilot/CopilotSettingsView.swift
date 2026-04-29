@@ -21,6 +21,7 @@ struct CopilotSettingsView: View {
     @AppStorage("decomptage.awsAccessKeyId") private var awsAccessKeyId = ""
     @AppStorage("decomptage.awsSecretAccessKey") private var awsSecretAccessKey = ""
     @AppStorage("decomptage.awsRegion") private var awsRegion = "us-east-1"
+    @AppStorage("decomptage.bedrockApiKey") private var bedrockApiKey = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -61,6 +62,7 @@ struct CopilotSettingsView: View {
         if !awsAccessKeyId.isEmpty { vars["AWS_ACCESS_KEY_ID"] = awsAccessKeyId }
         if !awsSecretAccessKey.isEmpty { vars["AWS_SECRET_ACCESS_KEY"] = awsSecretAccessKey }
         if !awsRegion.isEmpty { vars["AWS_REGION"] = awsRegion }
+        if !bedrockApiKey.isEmpty { vars["BEDROCK_API_KEY"] = bedrockApiKey }
         if !ollamaUrl.isEmpty { vars["OLLAMA_URL"] = ollamaUrl }
 
         guard !vars.isEmpty else { return }
@@ -93,6 +95,11 @@ struct CopilotSettingsView: View {
 
                     Text("AWS Bedrock")
                         .font(.system(size: 11, weight: .medium))
+                    apiKeyField(label: "Bedrock API Key", binding: $bedrockApiKey, placeholder: "bedrock-api-key-...")
+                    Text("— or use IAM credentials —")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                        .frame(maxWidth: .infinity, alignment: .center)
                     apiKeyField(label: "Access Key ID", binding: $awsAccessKeyId, placeholder: "AKIA...")
                     apiKeyField(label: "Secret Access Key", binding: $awsSecretAccessKey, placeholder: "...")
                     HStack {

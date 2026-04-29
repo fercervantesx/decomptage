@@ -297,6 +297,7 @@ fn parse_messages(params: &Value) -> Vec<ChatMessage> {
 }
 
 fn get_available_providers() -> Value {
+    let ollama_models = OllamaProvider::new().capabilities().models;
     json!([
         {
             "id": "anthropic",
@@ -321,7 +322,7 @@ fn get_available_providers() -> Value {
         },
         {
             "id": "ollama",
-            "models": ["llama3.3", "qwen2.5-coder", "mistral"],
+            "models": ollama_models,
             "streaming": true,
             "vision": false,
             "configured": true

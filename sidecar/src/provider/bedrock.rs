@@ -4,16 +4,23 @@ use aws_sdk_bedrockruntime::types::{
     ContentBlock, ConversationRole, ConverseStreamOutput, Message, SystemContentBlock,
 };
 use futures::stream::BoxStream;
+use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE};
+use serde::Serialize;
 
 use super::{Capabilities, ChatEvent, ChatMessage, ChatRequest, ContentPart, Provider};
 
+/// Bedrock supports two auth modes:
+/// 1. IAM credentials (AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY) → uses AWS SDK + SigV4
+/// 2. Bedrock API Key (BEDROCK_API_KEY) → uses bearer token on the REST API directly
 pub struct BedrockProvider {
     region: String,
+    api_key: Option<String>,
 }
 
 impl BedrockProvider {
     pub fn new(region: String) -> Self {
-        Self { region }
+        let api_key = std::env::var("BEDROCK_API_KEY").ok();
+        Self { region, api_key }
     }
 }
 
@@ -23,6 +30,12 @@ impl Provider for BedrockProvider {
         &self,
         req: ChatRequest,
     ) -> Result<BoxStream<'static, ChatEvent>, String> {
+        // If a Bedrock API Key is set, use the bearer token REST path
+        if let Some(api_key) = &self.api_key {
+            return self.chat_stream_with_api_key(api_key, req).await;
+        }
+
+        // Otherwise, use IAM credentials via the AWS SDK
         let config = aws_config::defaults(BehaviorVersion::latest())
             .region(aws_config::Region::new(self.region.clone()))
             .load()
@@ -151,5 +164,182 @@ impl Provider for BedrockProvider {
             streaming: true,
             vision: true,
         }
+    }
+}
+
+// MARK: - Bedrock API Key path (bearer token, Anthropic Messages format)
+
+#[derive(Serialize)]
+struct ApiKeyRequest {
+    model: String,
+    max_tokens: u32,
+    messages: Vec<ApiKeyMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
+    stream: bool,
+}
+
+#[derive(Serialize)]
+struct ApiKeyMessage {
+    role: String,
+    content: Vec<ApiKeyContent>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum ApiKeyContent {
+    #[serde(rename = "text")]
+    Text { text: String },
+    #[serde(rename = "image")]
+    Image { source: ApiKeyImageSource },
+}
+
+#[derive(Serialize)]
+struct ApiKeyImageSource {
+    #[serde(rename = "type")]
+    source_type: String,
+    media_type: String,
+    data: String,
+}
+
+impl BedrockProvider {
+    async fn chat_stream_with_api_key(
+        &self,
+        api_key: &str,
+        req: ChatRequest,
+    ) -> Result<BoxStream<'static, ChatEvent>, String> {
+        let messages: Vec<ApiKeyMessage> = req
+            .messages
+            .iter()
+            .map(|m| ApiKeyMessage {
+                role: m.role.clone(),
+                content: m
+                    .content
+                    .iter()
+                    .map(|p| match p {
+                        ContentPart::Text { text } => ApiKeyContent::Text { text: text.clone() },
+                        ContentPart::Image { media_type, data } => ApiKeyContent::Image {
+                            source: ApiKeyImageSource {
+                                source_type: "base64".to_string(),
+                                media_type: media_type.clone(),
+                                data: data.clone(),
+                            },
+                        },
+                    })
+                    .collect(),
+            })
+            .collect();
+
+        let body = ApiKeyRequest {
+            model: req.model.clone(),
+            max_tokens: req.max_tokens,
+            messages,
+            system: req.system,
+            stream: true,
+        };
+
+        // Bedrock API Key endpoint uses the model ID in the URL
+        let url = format!(
+            "https://bedrock-runtime.{}.amazonaws.com/model/{}/invoke-with-response-stream",
+            self.region, req.model
+        );
+
+        let client = reqwest::Client::new();
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "Authorization",
+            HeaderValue::from_str(&format!("Bearer {}", api_key)).unwrap(),
+        );
+        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+        let response = client
+            .post(&url)
+            .headers(headers)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| format!("Bedrock API key request failed: {}", e))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            return Err(format!("Bedrock API error {}: {}", status, text));
+        }
+
+        let byte_stream = response.bytes_stream();
+
+        // Bedrock with API key uses SSE format similar to Anthropic
+        let event_stream = async_stream::stream! {
+            use futures::StreamExt;
+
+            let mut buffer = String::new();
+            let mut current_event_type = String::new();
+            let mut input_tokens = 0u32;
+            let mut output_tokens = 0u32;
+            let mut byte_stream = std::pin::pin!(byte_stream);
+
+            while let Some(chunk_result) = byte_stream.next().await {
+                let chunk = match chunk_result {
+                    Ok(c) => c,
+                    Err(e) => {
+                        yield ChatEvent::Error { message: format!("stream error: {}", e) };
+                        return;
+                    }
+                };
+
+                buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+                while let Some(double_newline) = buffer.find("\n\n") {
+                    let event_block = buffer[..double_newline].to_string();
+                    buffer = buffer[double_newline + 2..].to_string();
+
+                    let mut data_lines = Vec::new();
+                    for line in event_block.lines() {
+                        if let Some(et) = line.strip_prefix("event: ") {
+                            current_event_type = et.trim().to_string();
+                        } else if let Some(d) = line.strip_prefix("data: ") {
+                            data_lines.push(d.to_string());
+                        }
+                    }
+
+                    if data_lines.is_empty() { continue; }
+                    let data = data_lines.join("\n");
+
+                    match current_event_type.as_str() {
+                        "content_block_delta" => {
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                                if let Some(delta) = parsed.get("delta") {
+                                    if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                                        if !text.is_empty() {
+                                            yield ChatEvent::Delta { text: text.to_string() };
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        "message_start" => {
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                                if let Some(usage) = parsed.get("message").and_then(|m| m.get("usage")) {
+                                    input_tokens = usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                                }
+                            }
+                        }
+                        "message_delta" => {
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                                if let Some(usage) = parsed.get("usage") {
+                                    output_tokens = usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                                }
+                            }
+                        }
+                        "message_stop" => {
+                            yield ChatEvent::Done { input_tokens, output_tokens };
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        };
+
+        Ok(Box::pin(event_stream))
     }
 }
