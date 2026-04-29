@@ -174,18 +174,20 @@ async fn handle_chat_send(
         }
     };
 
+    let default_model = match provider_id {
+        "anthropic" => "claude-sonnet-4-6".to_string(),
+        "openai" => "gpt-4o".to_string(),
+        "gemini" => "gemini-2.5-flash".to_string(),
+        "ollama" => "llama3.3".to_string(),
+        "bedrock" => std::env::var("BEDROCK_MODEL_ID")
+            .unwrap_or_else(|_| "anthropic.claude-sonnet-4-6-20250514-v1:0".to_string()),
+        _ => "unknown".to_string(),
+    };
     let model = params
         .get("model")
         .and_then(|v| v.as_str())
-        .unwrap_or(match provider_id {
-            "anthropic" => "claude-sonnet-4-6",
-            "openai" => "gpt-4o",
-            "gemini" => "gemini-2.5-flash",
-            "ollama" => "llama3.3",
-            "bedrock" => "anthropic.claude-sonnet-4-6-20250514-v1:0",
-            _ => "unknown",
-        })
-        .to_string();
+        .map(|s| s.to_string())
+        .unwrap_or(default_model);
 
     let messages = parse_messages(params);
     let base_system = params.get("system").and_then(|v| v.as_str()).unwrap_or(
