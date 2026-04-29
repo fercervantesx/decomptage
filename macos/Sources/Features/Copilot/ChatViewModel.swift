@@ -62,7 +62,11 @@ final class ChatViewModel: ObservableObject {
 
     /// Debounce timer for auto-comments after context arrives
     private var autoCommentTimer: Timer?
-    private let autoCommentDelay: TimeInterval = 3.0
+    private let autoCommentDelay: TimeInterval = 5.0
+
+    /// Minimum time between auto-comments (prevents flooding)
+    private var lastAutoCommentTime: Date = .distantPast
+    private let autoCommentCooldown: TimeInterval = 30.0
 
     func connect() {
         bridge.start()
@@ -123,6 +127,12 @@ final class ChatViewModel: ObservableObject {
         autoCommentTimer?.invalidate()
         guard autoComment, !isStreaming else { return }
 
+        // Enforce cooldown — don't auto-comment more than once per 30s
+        let timeSinceLastComment = Date().timeIntervalSince(lastAutoCommentTime)
+        if timeSinceLastComment < autoCommentCooldown {
+            return
+        }
+
         autoCommentTimer = Timer.scheduledTimer(withTimeInterval: autoCommentDelay, repeats: false) { [weak self] _ in
             Task { @MainActor in
                 self?.sendAutoComment()
@@ -133,15 +143,18 @@ final class ChatViewModel: ObservableObject {
     private func sendAutoComment() {
         guard autoComment, !isStreaming, bridge.isConnected else { return }
 
-        // Don't auto-comment if the user just sent a message (last message is from assistant or empty)
-        // Only auto-comment if the user hasn't interacted with chat recently
-        if let last = messages.last, last.role == "assistant" && !last.isStreaming {
-            // Last message was a completed assistant response — new terminal activity happened
-        } else if messages.isEmpty {
-            // No messages yet — first auto-comment
-        } else {
+        // Enforce cooldown again (timer may have been scheduled before cooldown was checked)
+        let timeSinceLastComment = Date().timeIntervalSince(lastAutoCommentTime)
+        if timeSinceLastComment < autoCommentCooldown {
             return
         }
+
+        // Don't auto-comment if currently streaming or user just typed
+        if let last = messages.last, last.role == "user" || last.isStreaming {
+            return
+        }
+
+        lastAutoCommentTime = Date()
 
         messages.append(ChatMessage(role: "assistant", content: "", isStreaming: true))
         isStreaming = true
@@ -157,7 +170,7 @@ final class ChatViewModel: ObservableObject {
                 "model": selectedModel,
                 "messages": Array(apiMessages),
                 "max_tokens": 1024,
-                "system": "You are a terminal copilot. You just received new terminal output as context. Briefly comment on what the user is doing — suggest a next step, flag an error, or stay silent if nothing interesting happened. Be very concise (1-2 sentences max). If the output is routine (a clean prompt, ls output, cd), say nothing and respond with exactly \"[no comment]\". Do NOT be chatty.",
+                "system": "You are a terminal copilot. RULES: 1) If nothing notable happened (routine prompt, ls, cd, clear), respond ONLY with \"[no comment]\" — nothing else. 2) If there IS something worth noting (error, warning, failed command, surprising output), write ONE sentence max. 3) Never explain concepts unprompted. 4) Never write code unless asked. 5) Respond in the same language the user's terminal is using.",
             ]
         ) { [weak self] result in
             if case .failure(let err) = result {
