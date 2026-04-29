@@ -7,6 +7,7 @@ use tracing::{info, warn};
 
 use crate::codeblock::CodeblockDetector;
 use crate::provider::anthropic::AnthropicProvider;
+use crate::provider::bedrock::BedrockProvider;
 use crate::provider::gemini::GeminiProvider;
 use crate::provider::ollama::OllamaProvider;
 use crate::provider::openai::OpenAIProvider;
@@ -54,6 +55,20 @@ pub async fn handle_connection(stream: UnixStream) {
                         context_buffer.push(text.to_string());
                         if context_buffer.len() > 10 {
                             context_buffer.remove(0);
+                        }
+                    }
+                }
+                let resp = Response::success(req.id, json!({"status": "ok"}));
+                let _ = send_line(&mut writer, &resp).await;
+            }
+            "settings.update" => {
+                // Dynamically set env vars for provider credentials
+                if let Some(vars) = req.params.as_object() {
+                    for (key, value) in vars {
+                        if let Some(v) = value.as_str() {
+                            if !v.is_empty() {
+                                std::env::set_var(key, v);
+                            }
                         }
                     }
                 }
@@ -143,6 +158,12 @@ async fn handle_chat_send(
                 .unwrap_or_else(|_| "http://localhost:11434".to_string());
             Box::new(OllamaProvider::with_url(url))
         }
+        "bedrock" => {
+            let region = std::env::var("AWS_REGION")
+                .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+                .unwrap_or_else(|_| "us-east-1".to_string());
+            Box::new(BedrockProvider::new(region))
+        }
         _ => {
             let notif = Notification {
                 method: "chat.error",
@@ -161,6 +182,7 @@ async fn handle_chat_send(
             "openai" => "gpt-4o",
             "gemini" => "gemini-2.5-flash",
             "ollama" => "llama3.3",
+            "bedrock" => "anthropic.claude-sonnet-4-6-20250514-v1:0",
             _ => "unknown",
         })
         .to_string();
@@ -306,11 +328,10 @@ fn get_available_providers() -> Value {
         },
         {
             "id": "bedrock",
-            "models": ["anthropic.claude-sonnet-4-6-20250514-v1:0", "meta.llama3-3-70b-instruct-v1:0"],
+            "models": ["anthropic.claude-sonnet-4-6-20250514-v1:0", "anthropic.claude-haiku-4-5-20251001-v1:0", "us.anthropic.claude-opus-4-7-20250506-v1:0", "meta.llama3-3-70b-instruct-v1:0", "amazon.nova-pro-v1:0"],
             "streaming": true,
             "vision": true,
-            "configured": false,
-            "note": "stub — requires aws-sdk-bedrockruntime"
+            "configured": std::env::var("AWS_ACCESS_KEY_ID").is_ok() || std::env::var("AWS_PROFILE").is_ok()
         }
     ])
 }

@@ -17,6 +17,11 @@ struct CopilotSettingsView: View {
     @AppStorage("decomptage.geminiApiKey") private var geminiApiKey = ""
     @AppStorage("decomptage.ollamaUrl") private var ollamaUrl = "http://localhost:11434"
 
+    // AWS Bedrock credentials
+    @AppStorage("decomptage.awsAccessKeyId") private var awsAccessKeyId = ""
+    @AppStorage("decomptage.awsSecretAccessKey") private var awsSecretAccessKey = ""
+    @AppStorage("decomptage.awsRegion") private var awsRegion = "us-east-1"
+
     var body: some View {
         VStack(spacing: 0) {
             header
@@ -38,11 +43,28 @@ struct CopilotSettingsView: View {
             Text("Copilot Settings")
                 .font(.system(size: 13, weight: .semibold))
             Spacer()
-            Button("Done") { dismiss() }
-                .keyboardShortcut(.defaultAction)
+            Button("Done") {
+                pushCredentialsToSidecar()
+                dismiss()
+            }
+            .keyboardShortcut(.defaultAction)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
+    }
+
+    private func pushCredentialsToSidecar() {
+        var vars: [String: Any] = [:]
+        if !anthropicApiKey.isEmpty { vars["ANTHROPIC_API_KEY"] = anthropicApiKey }
+        if !openaiApiKey.isEmpty { vars["OPENAI_API_KEY"] = openaiApiKey }
+        if !geminiApiKey.isEmpty { vars["GEMINI_API_KEY"] = geminiApiKey }
+        if !awsAccessKeyId.isEmpty { vars["AWS_ACCESS_KEY_ID"] = awsAccessKeyId }
+        if !awsSecretAccessKey.isEmpty { vars["AWS_SECRET_ACCESS_KEY"] = awsSecretAccessKey }
+        if !awsRegion.isEmpty { vars["AWS_REGION"] = awsRegion }
+        if !ollamaUrl.isEmpty { vars["OLLAMA_URL"] = ollamaUrl }
+
+        guard !vars.isEmpty else { return }
+        SidecarBridge.shared.send(method: "settings.update", params: vars)
     }
 
     // MARK: - Providers
@@ -66,11 +88,26 @@ struct CopilotSettingsView: View {
                             .textFieldStyle(.roundedBorder)
                             .font(.system(size: 11))
                     }
+
+                    Divider().padding(.vertical, 4)
+
+                    Text("AWS Bedrock")
+                        .font(.system(size: 11, weight: .medium))
+                    apiKeyField(label: "Access Key ID", binding: $awsAccessKeyId, placeholder: "AKIA...")
+                    apiKeyField(label: "Secret Access Key", binding: $awsSecretAccessKey, placeholder: "...")
+                    HStack {
+                        Text("Region")
+                            .font(.system(size: 11))
+                            .frame(width: 110, alignment: .leading)
+                        TextField("us-east-1", text: $awsRegion)
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 11))
+                    }
                 }
                 .padding(4)
             }
 
-            Text("API keys are stored locally. Ollama requires no key — just the server URL.")
+            Text("API keys are stored locally. Ollama requires no key. Bedrock uses AWS credentials (Access Key ID + Secret Key, or `aws configure`).")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
         }
