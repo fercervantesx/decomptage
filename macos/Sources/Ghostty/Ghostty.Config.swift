@@ -747,6 +747,42 @@ extension Ghostty {
             _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
             return v
         }
+
+        // MARK: Copilot (decomptage fork)
+
+        var copilotEnabled: Bool {
+            guard let config = self.config else { return true }
+            var v = true
+            let key = "copilot-enabled"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
+
+        var copilotPosition: CopilotPosition {
+            let defaultValue = CopilotPosition.right
+            guard let config = self.config else { return defaultValue }
+            var v: UnsafePointer<Int8>?
+            let key = "copilot-position"
+            guard ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8))) else { return defaultValue }
+            guard let ptr = v else { return defaultValue }
+            return CopilotPosition(rawValue: String(cString: ptr)) ?? defaultValue
+        }
+
+        var copilotRatio: CGFloat {
+            guard let config = self.config else { return 0.33 }
+            var v: Float = 0.33
+            let key = "copilot-ratio"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return CGFloat(v)
+        }
+
+        var copilotCollapsed: Bool {
+            guard let config = self.config else { return false }
+            var v = false
+            let key = "copilot-collapsed"
+            _ = ghostty_config_get(config, &v, key, UInt(key.lengthOfBytes(using: .utf8)))
+            return v
+        }
     }
 }
 
@@ -757,6 +793,30 @@ extension Ghostty.Config {
         case off
         case check
         case download
+    }
+
+    /// Which side of the tab the copilot pane is docked on.
+    /// Must match the Zig `CopilotPosition` enum in `src/config/Config.zig`.
+    enum CopilotPosition: String {
+        case right
+        case left
+        case top
+        case bottom
+
+        var isVertical: Bool {
+            switch self {
+            case .right, .left: return true
+            case .top, .bottom: return false
+            }
+        }
+
+        /// True if the chat pane sits on the trailing/bottom side of the split.
+        var isTrailing: Bool {
+            switch self {
+            case .right, .bottom: return true
+            case .left, .top: return false
+            }
+        }
     }
 
     /// Background blur configuration that maps from the C API values.

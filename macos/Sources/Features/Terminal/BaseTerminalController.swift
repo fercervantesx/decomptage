@@ -51,6 +51,14 @@ class BaseTerminalController: NSWindowController,
     /// Set if the terminal view should show the update overlay.
     @Published var updateOverlayIsVisible: Bool = false
 
+    /// The per-tab copilot pane layout. Seeded from the Ghostty config
+    /// on first creation; mutated at runtime by the divider and
+    /// toggle/collapse actions. Persistence across app restart is
+    /// handled by `ChatPaneRatioStorage` via `AppStorage`.
+    ///
+    /// This is a feature of the decomptage fork.
+    let chatLayout: ChatLayout
+
     /// True when any surface in this controller currently has an active bell.
     @Published private(set) var bell: Bool = false
 
@@ -134,6 +142,7 @@ class BaseTerminalController: NSWindowController,
     ) {
         self.ghostty = ghostty
         self.derivedConfig = DerivedConfig(ghostty.config)
+        self.chatLayout = ChatLayout(config: ghostty.config)
 
         super.init(window: nil)
 
