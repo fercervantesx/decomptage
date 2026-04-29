@@ -1,0 +1,22 @@
+[package]
+name = "decomptage-sidecar"
+version = "0.1.0"
+edition = "2021"
+description = "LLM provider sidecar for Decomptage terminal"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures = "0.3"
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+eventsource-stream = "0.2"
+tokio-stream = "0.1"
+async-trait = "0.1"
+async-stream = "0.3"
+bytes = "1"
+anyhow = "1"
