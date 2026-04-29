@@ -30,6 +30,10 @@ final class ContextCapture: ObservableObject {
         "AWS_SECRET", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
     ]
 
+    /// Called after context is successfully pushed to the sidecar.
+    /// Used by ChatViewModel to trigger auto-comments.
+    var onContextPushed: (() -> Void)?
+
     /// Surface provider — returns the currently focused surface for reading
     var surfaceProvider: (() -> ghostty_surface_t?)?
 
@@ -143,6 +147,10 @@ final class ContextCapture: ObservableObject {
                 "payload": ["text": delta],
             ]
         )
+
+        DispatchQueue.main.async {
+            self.onContextPushed?()
+        }
     }
 
     private func containsSecrets(_ text: String) -> Bool {

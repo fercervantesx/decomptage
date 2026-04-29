@@ -57,10 +57,22 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    /// When true, the copilot proactively comments on terminal activity
+    @Published var autoComment: Bool = true
+
+    /// Debounce timer for auto-comments after context arrives
+    private var autoCommentTimer: Timer?
+    private let autoCommentDelay: TimeInterval = 3.0
+
     func connect() {
         bridge.start()
         fetchProviders()
         contextCapture.start()
+
+        // Listen for context pushes and trigger auto-comments
+        contextCapture.onContextPushed = { [weak self] in
+            self?.scheduleAutoComment()
+        }
     }
 
     func clearConversation() {
@@ -103,6 +115,61 @@ final class ChatViewModel: ObservableObject {
 
     var availableModels: [String] {
         providers.first(where: { $0.id == selectedProvider })?.models ?? []
+    }
+
+    // MARK: - Auto-comment
+
+    private func scheduleAutoComment() {
+        autoCommentTimer?.invalidate()
+        guard autoComment, !isStreaming else { return }
+
+        autoCommentTimer = Timer.scheduledTimer(withTimeInterval: autoCommentDelay, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                self?.sendAutoComment()
+            }
+        }
+    }
+
+    private func sendAutoComment() {
+        guard autoComment, !isStreaming, bridge.isConnected else { return }
+
+        // Don't auto-comment if the user just sent a message (last message is from assistant or empty)
+        // Only auto-comment if the user hasn't interacted with chat recently
+        if let last = messages.last, last.role == "assistant" && !last.isStreaming {
+            // Last message was a completed assistant response — new terminal activity happened
+        } else if messages.isEmpty {
+            // No messages yet — first auto-comment
+        } else {
+            return
+        }
+
+        messages.append(ChatMessage(role: "assistant", content: "", isStreaming: true))
+        isStreaming = true
+
+        let apiMessages: [[String: Any]] = messages.dropLast().map { msg in
+            ["role": msg.role, "content": msg.content]
+        }
+
+        bridge.send(
+            method: "chat.send",
+            params: [
+                "provider": selectedProvider,
+                "model": selectedModel,
+                "messages": Array(apiMessages),
+                "max_tokens": 1024,
+                "system": "You are a terminal copilot. You just received new terminal output as context. Briefly comment on what the user is doing — suggest a next step, flag an error, or stay silent if nothing interesting happened. Be very concise (1-2 sentences max). If the output is routine (a clean prompt, ls output, cd), say nothing and respond with exactly \"[no comment]\". Do NOT be chatty.",
+            ]
+        ) { [weak self] result in
+            if case .failure(let err) = result {
+                Task { @MainActor in
+                    self?.isStreaming = false
+                    // Silently remove the empty assistant message on failure
+                    if self?.messages.last?.content.isEmpty == true {
+                        self?.messages.removeLast()
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Private
@@ -149,6 +216,12 @@ final class ChatViewModel: ObservableObject {
         case "chat.done":
             if messages.last?.role == "assistant" {
                 messages[messages.count - 1].isStreaming = false
+                // If the LLM said "[no comment]" or was empty, remove silently
+                let content = messages[messages.count - 1].content
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if content.isEmpty || content == "[no comment]" || content.lowercased().contains("[no comment]") {
+                    messages.removeLast()
+                }
             }
             isStreaming = false
 
