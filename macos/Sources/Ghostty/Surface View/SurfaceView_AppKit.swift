@@ -1560,9 +1560,14 @@ extension Ghostty {
         }
 
         @IBAction func paste(_ sender: Any?) {
-            // If we're not the first responder, let the responder chain handle it
-            // (e.g., SwiftUI TextFields in the copilot pane or settings sheet)
-            guard window?.firstResponder === self else { return }
+            // If a text field has focus (SwiftUI TextField uses NSText/NSTextView
+            // as field editor), let AppKit's responder chain handle the paste
+            // instead of routing it to the terminal PTY.
+            if let responder = window?.firstResponder,
+               responder !== self,
+               responder is NSText {
+                return
+            }
             guard let surface = self.surface else { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {
@@ -1571,7 +1576,11 @@ extension Ghostty {
         }
 
         @IBAction func pasteAsPlainText(_ sender: Any?) {
-            guard window?.firstResponder === self else { return }
+            if let responder = window?.firstResponder,
+               responder !== self,
+               responder is NSText {
+                return
+            }
             guard let surface = self.surface else { return }
             let action = "paste_from_clipboard"
             if !ghostty_surface_binding_action(surface, action, UInt(action.lengthOfBytes(using: .utf8))) {

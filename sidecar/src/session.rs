@@ -190,20 +190,29 @@ async fn handle_chat_send(
         .map(|s| s.to_string())
         .unwrap_or(default_model);
 
-    let messages = parse_messages(params);
+    let mut messages = parse_messages(params);
     let base_system = params.get("system").and_then(|v| v.as_str()).unwrap_or(
-        "You are a terminal copilot. You see what the user is doing in their terminal and help them. Be concise and practical. When suggesting commands, use the suggest_command tool or put them in ```sh code blocks."
+        "You are a senior developer assistant embedded in a terminal emulator. You can see the user's terminal output in real-time. Help them with commands, debugging, and development tasks. Be concise and practical. When suggesting commands, put them in ```sh code blocks so they appear as actionable cards."
     );
 
-    let system = if context_buffer.is_empty() {
-        Some(base_system.to_string())
-    } else {
+    let system = Some(base_system.to_string());
+
+    // Inject terminal context as a user message prepended to the conversation,
+    // so the LLM sees it as part of the chat flow (not hidden in system prompt).
+    if !context_buffer.is_empty() {
         let context = context_buffer.join("\n---\n");
-        Some(format!(
-            "{}\n\n<terminal_context>\nRecent terminal output:\n{}\n</terminal_context>",
-            base_system, context
-        ))
-    };
+        let context_msg = ChatMessage {
+            role: "user".to_string(),
+            content: vec![ContentPart::Text {
+                text: format!(
+                    "[Terminal context - this is what's currently visible in my terminal. Do not respond to this directly, just use it as context for my questions.]\n\n```\n{}\n```",
+                    context
+                ),
+            }],
+        };
+        // Insert at position 0 (before user messages) so it's always the first thing
+        messages.insert(0, context_msg);
+    }
 
     let req = ChatRequest {
         model,
