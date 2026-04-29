@@ -934,6 +934,18 @@ pub const Action = union(enum) {
     ///
     crash: CrashThread,
 
+    /// Toggle the copilot pane visibility in the current tab.
+    /// (Decomptage fork feature)
+    toggle_copilot,
+
+    /// Move focus between the terminal and the copilot pane.
+    /// (Decomptage fork feature)
+    focus_copilot,
+
+    /// Share the current terminal screen content with the copilot
+    /// as manual context. (Decomptage fork feature)
+    copilot_manual_share,
+
     pub const Key = @typeInfo(Action).@"union".tag_type.?;
 
     /// Make this a valid gobject if we're in a GTK environment.
@@ -1391,6 +1403,9 @@ pub const Action = union(enum) {
             .resize_split,
             .equalize_splits,
             .inspector,
+            .toggle_copilot,
+            .focus_copilot,
+            .copilot_manual_share,
             => .surface,
         };
     }

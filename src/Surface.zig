@@ -5652,6 +5652,24 @@ pub fn performBindingAction(self: *Surface, action: input.Binding.Action) !bool 
             {},
         ),
 
+        .toggle_copilot => return try self.rt_app.performAction(
+            .{ .surface = self },
+            .toggle_copilot,
+            {},
+        ),
+
+        .focus_copilot => return try self.rt_app.performAction(
+            .{ .surface = self },
+            .focus_copilot,
+            {},
+        ),
+
+        .copilot_manual_share => return try self.rt_app.performAction(
+            .{ .surface = self },
+            .copilot_manual_share,
+            {},
+        ),
+
         .show_on_screen_keyboard => return try self.rt_app.performAction(
             .{ .surface = self },
             .show_on_screen_keyboard,

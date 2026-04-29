@@ -25,41 +25,100 @@ struct ChatPaneView: View {
         }
     }
 
+    @State private var showSettings = false
+
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "sparkle")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(.secondary)
-            Text("Copilot")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(.primary)
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkle")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                Text("Copilot")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.primary)
 
-            if viewModel.isStreaming {
-                ProgressView()
-                    .controlSize(.mini)
-                    .padding(.leading, 2)
+                if viewModel.isStreaming {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .padding(.leading, 2)
+                }
+
+                Spacer()
+
+                Circle()
+                    .fill(SidecarBridge.shared.isConnected ? Color.green : Color.red)
+                    .frame(width: 6, height: 6)
+                    .help(SidecarBridge.shared.isConnected ? "Connected to sidecar" : "Disconnected")
+
+                Button {
+                    showSettings.toggle()
+                } label: {
+                    Image(systemName: "gear")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .help("Copilot settings")
+
+                Button {
+                    layout.toggle()
+                } label: {
+                    Image(systemName: "sidebar.right")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .help("Hide the copilot pane")
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
 
-            Spacer()
+            // Provider selector row
+            HStack(spacing: 4) {
+                Picker("", selection: $viewModel.selectedProvider) {
+                    ForEach(viewModel.providers) { provider in
+                        HStack(spacing: 4) {
+                            Text(provider.id.capitalized)
+                            if !provider.configured {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .font(.system(size: 8))
+                                    .foregroundStyle(.orange)
+                            }
+                        }
+                        .tag(provider.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 110)
+                .controlSize(.small)
 
-            Circle()
-                .fill(SidecarBridge.shared.isConnected ? Color.green : Color.red)
-                .frame(width: 6, height: 6)
-                .help(SidecarBridge.shared.isConnected ? "Connected to sidecar" : "Disconnected")
+                Picker("", selection: $viewModel.selectedModel) {
+                    ForEach(viewModel.availableModels, id: \.self) { model in
+                        Text(model).tag(model)
+                    }
+                }
+                .pickerStyle(.menu)
+                .frame(maxWidth: 160)
+                .controlSize(.small)
 
-            Button {
-                layout.toggle()
-            } label: {
-                Image(systemName: "sidebar.right")
-                    .font(.system(size: 11))
+                Spacer()
+
+                Button {
+                    viewModel.clearConversation()
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.plain)
+                .help("Clear conversation")
+                .disabled(viewModel.messages.isEmpty)
             }
-            .buttonStyle(.plain)
-            .help("Hide the copilot pane")
+            .padding(.horizontal, 10)
+            .padding(.bottom, 6)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .sheet(isPresented: $showSettings) {
+            CopilotSettingsView()
+        }
     }
 
     // MARK: - Messages

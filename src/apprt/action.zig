@@ -343,6 +343,15 @@ pub const Action = union(Key) {
     /// otherwise the terminal-set title.
     copy_title_to_clipboard,
 
+    /// Toggle the copilot pane in the current tab. (Decomptage fork)
+    toggle_copilot,
+
+    /// Focus the copilot pane (or return focus to terminal). (Decomptage fork)
+    focus_copilot,
+
+    /// Share current terminal screen as manual context. (Decomptage fork)
+    copilot_manual_share,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -410,6 +419,9 @@ pub const Action = union(Key) {
         search_selected,
         readonly,
         copy_title_to_clipboard,
+        toggle_copilot,
+        focus_copilot,
+        copilot_manual_share,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");

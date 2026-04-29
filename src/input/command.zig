@@ -722,6 +722,12 @@ fn actionCommands(action: Action.Key) []const Command {
         .ignore,
         .unbind,
         => comptime &.{},
+
+        // Copilot actions (decomptage fork)
+        .toggle_copilot,
+        .focus_copilot,
+        .copilot_manual_share,
+        => comptime &.{},
     };
 
     // All generated commands should have the same action as the

@@ -9,6 +9,14 @@ struct ChatMessage: Identifiable {
     var suggestedCommand: String?
 }
 
+struct ProviderInfo: Identifiable, Hashable {
+    let id: String
+    let models: [String]
+    let streaming: Bool
+    let vision: Bool
+    let configured: Bool
+}
+
 @MainActor
 final class ChatViewModel: ObservableObject {
     @Published var messages: [ChatMessage] = []
@@ -16,9 +24,20 @@ final class ChatViewModel: ObservableObject {
     @Published var isStreaming: Bool = false
     @Published var error: String?
 
+    @Published var providers: [ProviderInfo] = []
+    @Published var selectedProvider: String {
+        didSet { UserDefaults.standard.set(selectedProvider, forKey: "decomptage.selectedProvider") }
+    }
+    @Published var selectedModel: String {
+        didSet { UserDefaults.standard.set(selectedModel, forKey: "decomptage.selectedModel") }
+    }
+
     private let bridge = SidecarBridge.shared
 
     init() {
+        self.selectedProvider = UserDefaults.standard.string(forKey: "decomptage.selectedProvider") ?? "anthropic"
+        self.selectedModel = UserDefaults.standard.string(forKey: "decomptage.selectedModel") ?? "claude-sonnet-4-6"
+
         bridge.onNotification = { [weak self] method, params in
             Task { @MainActor in
                 self?.handleNotification(method: method, params: params)
@@ -28,6 +47,12 @@ final class ChatViewModel: ObservableObject {
 
     func connect() {
         bridge.start()
+        fetchProviders()
+    }
+
+    func clearConversation() {
+        messages.removeAll()
+        error = nil
     }
 
     func send() {
@@ -48,8 +73,9 @@ final class ChatViewModel: ObservableObject {
         bridge.send(
             method: "chat.send",
             params: [
+                "provider": selectedProvider,
+                "model": selectedModel,
                 "messages": Array(apiMessages),
-                "model": "claude-sonnet-4-6",
                 "max_tokens": 4096,
             ]
         ) { [weak self] result in
@@ -62,11 +88,48 @@ final class ChatViewModel: ObservableObject {
         }
     }
 
+    var availableModels: [String] {
+        providers.first(where: { $0.id == selectedProvider })?.models ?? []
+    }
+
+    // MARK: - Private
+
+    private func fetchProviders() {
+        bridge.send(method: "session.hello") { [weak self] result in
+            guard let self = self else { return }
+            Task { @MainActor in
+                if case .success(let value) = result,
+                   let dict = value as? [String: Any],
+                   let providersArray = dict["providers"] as? [[String: Any]] {
+                    self.providers = providersArray.compactMap { p in
+                        guard let id = p["id"] as? String,
+                              let models = p["models"] as? [String] else { return nil }
+                        return ProviderInfo(
+                            id: id,
+                            models: models,
+                            streaming: p["streaming"] as? Bool ?? false,
+                            vision: p["vision"] as? Bool ?? false,
+                            configured: p["configured"] as? Bool ?? false
+                        )
+                    }
+
+                    // Validate current selection
+                    if !self.providers.contains(where: { $0.id == self.selectedProvider }) {
+                        if let first = self.providers.first(where: { $0.configured }) {
+                            self.selectedProvider = first.id
+                            self.selectedModel = first.models.first ?? ""
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     private func handleNotification(method: String, params: [String: Any]) {
         switch method {
         case "chat.delta":
             if let text = params["text"] as? String,
-               var last = messages.last, last.role == "assistant" {
+               messages.last?.role == "assistant" {
                 messages[messages.count - 1].content += text
             }
 
