@@ -130,14 +130,36 @@ struct CopilotSettingsView: View {
         }
     }
 
+    @State private var revealedFields: Set<String> = []
+
     private func apiKeyField(label: String, binding: Binding<String>, placeholder: String) -> some View {
         HStack {
             Text(label)
                 .font(.system(size: 11))
                 .frame(width: 110, alignment: .leading)
-            SecureField(placeholder, text: binding)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 11))
+
+            if revealedFields.contains(label) {
+                TextField(placeholder, text: binding)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+            } else {
+                SecureField(placeholder, text: binding)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 11))
+            }
+
+            Button {
+                if revealedFields.contains(label) {
+                    revealedFields.remove(label)
+                } else {
+                    revealedFields.insert(label)
+                }
+            } label: {
+                Image(systemName: revealedFields.contains(label) ? "eye.slash" : "eye")
+                    .font(.system(size: 10))
+            }
+            .buttonStyle(.plain)
+            .help(revealedFields.contains(label) ? "Hide" : "Reveal to paste")
         }
     }
 
