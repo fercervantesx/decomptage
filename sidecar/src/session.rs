@@ -38,11 +38,12 @@ pub async fn handle_connection(stream: UnixStream) {
 
         match req.method.as_str() {
             "session.hello" => {
+                let providers = get_available_providers().await;
                 let resp = Response::success(
                     req.id,
                     json!({
                         "session_id": uuid::Uuid::new_v4().to_string(),
-                        "providers": get_available_providers(),
+                        "providers": providers,
                         "features": ["attachments", "streaming", "context"]
                     }),
                 );
@@ -298,8 +299,10 @@ fn parse_messages(params: &Value) -> Vec<ChatMessage> {
         .collect()
 }
 
-fn get_available_providers() -> Value {
-    let ollama_models = OllamaProvider::new().capabilities().models;
+async fn get_available_providers() -> Value {
+    let ollama_url = std::env::var("OLLAMA_URL")
+        .unwrap_or_else(|_| "http://localhost:11434".to_string());
+    let ollama_models = OllamaProvider::fetch_models(&ollama_url).await;
     json!([
         {
             "id": "anthropic",

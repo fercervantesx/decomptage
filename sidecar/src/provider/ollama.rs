@@ -157,11 +157,9 @@ impl Provider for OllamaProvider {
     }
 
     fn capabilities(&self) -> Capabilities {
-        // Try to fetch installed models synchronously (blocking, but called rarely)
-        let models = Self::fetch_models_blocking(&self.base_url);
         Capabilities {
             id: "ollama",
-            models,
+            models: vec![], // Populated dynamically via fetch_models()
             streaming: true,
             vision: false,
         }
@@ -169,20 +167,23 @@ impl Provider for OllamaProvider {
 }
 
 impl OllamaProvider {
-    fn fetch_models_blocking(base_url: &str) -> Vec<String> {
+    /// Fetch installed models from Ollama's /api/tags endpoint (async).
+    pub async fn fetch_models(base_url: &str) -> Vec<String> {
         let url = format!("{}/api/tags", base_url);
-        let resp = reqwest::blocking::get(&url).ok();
-        if let Some(resp) = resp {
-            if let Ok(json) = resp.json::<serde_json::Value>() {
-                if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
-                    return models
-                        .iter()
-                        .filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
-                        .collect();
+        let client = reqwest::Client::new();
+        match client.get(&url).send().await {
+            Ok(resp) => {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    if let Some(models) = json.get("models").and_then(|m| m.as_array()) {
+                        return models
+                            .iter()
+                            .filter_map(|m| m.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
+                            .collect();
+                    }
                 }
+                vec![]
             }
+            Err(_) => vec!["llama3.3".to_string(), "mistral".to_string()],
         }
-        // Fallback if Ollama isn't running
-        vec!["llama3.3".to_string(), "mistral".to_string()]
     }
 }
