@@ -200,6 +200,43 @@ test "ghostty_config_get: unknown key returns false" {
     try testing.expect(!ghostty_config_get(&cfg, &out, key, key.len));
 }
 
+test "ghostty_config_get: copilot keys" {
+    const testing = std.testing;
+    const alloc = testing.allocator;
+
+    var cfg = try Config.default(alloc);
+    defer cfg.deinit();
+    cfg.@"copilot-enabled" = false;
+    cfg.@"copilot-position" = .left;
+    cfg.@"copilot-ratio" = 0.42;
+    cfg.@"copilot-collapsed" = true;
+
+    {
+        var out = true;
+        const key = "copilot-enabled";
+        try testing.expect(ghostty_config_get(&cfg, &out, key, key.len));
+        try testing.expect(!out);
+    }
+    {
+        var out: [*:0]const u8 = undefined;
+        const key = "copilot-position";
+        try testing.expect(ghostty_config_get(&cfg, @ptrCast(&out), key, key.len));
+        try testing.expectEqualStrings("left", std.mem.sliceTo(out, 0));
+    }
+    {
+        var out: f32 = 0;
+        const key = "copilot-ratio";
+        try testing.expect(ghostty_config_get(&cfg, &out, key, key.len));
+        try testing.expectApproxEqAbs(@as(f32, 0.42), out, 0.0001);
+    }
+    {
+        var out = false;
+        const key = "copilot-collapsed";
+        try testing.expect(ghostty_config_get(&cfg, &out, key, key.len));
+        try testing.expect(out);
+    }
+}
+
 test "ghostty_config_get: optional string null returns true" {
     const testing = std.testing;
     const alloc = testing.allocator;

@@ -3796,6 +3796,28 @@ term: []const u8 = "xterm-ghostty",
 /// This only works on macOS since only macOS has an auto-update feature.
 @"auto-update-channel": ?build_config.ReleaseChannel = null,
 
+/// Enable the copilot pane, a per-tab side pane that hosts an LLM chat
+/// next to the terminal. When `false`, the pane is never shown and no
+/// sidecar process is spawned.
+///
+/// This is a feature of the decomptage fork of Ghostty.
+@"copilot-enabled": bool = true,
+
+/// The side on which the copilot pane is docked within a tab.
+///
+/// Valid values are `right`, `left`, `top`, `bottom`.
+@"copilot-position": CopilotPosition = .right,
+
+/// The fraction of the tab occupied by the copilot pane when expanded.
+/// Values are clamped to the range `[0.15, 0.75]`. A value of `0.33`
+/// means the copilot pane takes up one-third of the tab.
+@"copilot-ratio": f32 = 0.33,
+
+/// Whether the copilot pane starts collapsed (hidden) when a new tab
+/// is created. The user can toggle visibility at runtime with the
+/// `chat_toggle` keybind.
+@"copilot-collapsed": bool = false,
+
 /// This is set by the CLI parser for deinit.
 _arena: ?ArenaAllocator = null,
 
@@ -4668,6 +4690,9 @@ pub fn finalize(self: *Config) !void {
     // Clamp our split opacity
     self.@"unfocused-split-opacity" = @min(1.0, @max(0.15, self.@"unfocused-split-opacity"));
 
+    // Clamp copilot ratio to a sane window
+    self.@"copilot-ratio" = @min(0.75, @max(0.15, self.@"copilot-ratio"));
+
     // Clamp our contrast
     self.@"minimum-contrast" = @min(21, @max(1, self.@"minimum-contrast"));
 
@@ -5264,6 +5289,16 @@ pub const WindowPaddingColor = enum {
     background,
     extend,
     @"extend-always",
+};
+
+/// Valid values for copilot-position.
+/// c_int because it needs to be extern compatible
+/// If this is changed, you must also update ghostty.h
+pub const CopilotPosition = enum(c_int) {
+    right,
+    left,
+    top,
+    bottom,
 };
 
 pub const WindowSubtitle = enum {
