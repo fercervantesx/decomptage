@@ -1,3 +1,4 @@
+mod attachments;
 mod codeblock;
 mod provider;
 mod rpc;
