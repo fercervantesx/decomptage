@@ -13,6 +13,7 @@ use crate::provider::ollama::OllamaProvider;
 use crate::provider::openai::OpenAIProvider;
 use crate::provider::{ChatEvent, ChatMessage, ChatRequest, ContentPart, Provider};
 use crate::rpc::{Notification, Request, Response};
+use crate::tools;
 
 pub async fn handle_connection(stream: UnixStream) {
     let (reader, mut writer) = stream.into_split();
@@ -222,6 +223,7 @@ async fn handle_chat_send(
             .get("max_tokens")
             .and_then(|v| v.as_u64())
             .unwrap_or(4096) as u32,
+        tools: Some(tools::tool_definitions()),
     };
 
     // Debug: log the full request if DECOMPTAGE_DEBUG=1
@@ -265,6 +267,61 @@ async fn handle_chat_send(
                         Notification {
                             method: "chat.delta",
                             params: json!({"text": text}),
+                        }
+                    }
+                    ChatEvent::ToolUse { id, name, args } => {
+                        // Parse and route tool calls
+                        if let Some(tool_call) = tools::ToolCall::from_raw(id, name, args) {
+                            match &tool_call {
+                                tools::ToolCall::SuggestCommand { command, explanation, danger_level, .. } => {
+                                    Notification {
+                                        method: "chat.suggested_command",
+                                        params: json!({
+                                            "command": command,
+                                            "explanation": explanation,
+                                            "danger_level": danger_level,
+                                            "source": "tool_call"
+                                        }),
+                                    }
+                                }
+                                tools::ToolCall::RunCommand { command, explanation, .. } => {
+                                    let danger = tool_call.danger_level();
+                                    Notification {
+                                        method: "chat.tool_approval_request",
+                                        params: json!({
+                                            "tool_call_id": tool_call.id(),
+                                            "tool_name": "run_command",
+                                            "command": command,
+                                            "explanation": explanation,
+                                            "danger_level": danger,
+                                        }),
+                                    }
+                                }
+                                tools::ToolCall::ReadTerminal { .. } => {
+                                    Notification {
+                                        method: "chat.read_terminal_request",
+                                        params: json!({
+                                            "request_id": tool_call.id(),
+                                        }),
+                                    }
+                                }
+                                tools::ToolCall::ReadFile { path, lines, .. } => {
+                                    // Execute read_file directly (no approval for cwd)
+                                    let content = read_file_tool(path, *lines).await;
+                                    Notification {
+                                        method: "chat.tool_result",
+                                        params: json!({
+                                            "tool_call_id": tool_call.id(),
+                                            "result": content,
+                                        }),
+                                    }
+                                }
+                            }
+                        } else {
+                            Notification {
+                                method: "chat.error",
+                                params: json!({"message": format!("unknown tool: {}", name)}),
+                            }
                         }
                     }
                     ChatEvent::Done {
@@ -367,6 +424,17 @@ async fn get_available_providers() -> Value {
             "configured": std::env::var("AWS_ACCESS_KEY_ID").is_ok() || std::env::var("AWS_PROFILE").is_ok()
         }
     ])
+}
+
+async fn read_file_tool(path: &str, max_lines: Option<u32>) -> String {
+    let max = max_lines.unwrap_or(500) as usize;
+    match tokio::fs::read_to_string(path).await {
+        Ok(content) => {
+            let lines: Vec<&str> = content.lines().take(max).collect();
+            lines.join("\n")
+        }
+        Err(e) => format!("Error reading file: {}", e),
+    }
 }
 
 async fn send_line(

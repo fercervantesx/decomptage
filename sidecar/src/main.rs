@@ -5,6 +5,7 @@ mod provider;
 mod redact;
 mod rpc;
 mod session;
+mod tools;
 
 use std::path::PathBuf;
 use tokio::net::UnixListener;

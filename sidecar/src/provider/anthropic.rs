@@ -27,6 +27,8 @@ struct ApiRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     system: Option<String>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Serialize)]
@@ -121,6 +123,7 @@ impl Provider for AnthropicProvider {
             messages: convert_messages(&req.messages),
             system: req.system,
             stream: true,
+            tools: req.tools,
         };
 
         let mut headers = HeaderMap::new();
@@ -153,6 +156,12 @@ impl Provider for AnthropicProvider {
             let mut current_event_type = String::new();
             let mut input_tokens = 0u32;
             let mut output_tokens = 0u32;
+
+            // Tool use accumulation
+            let mut current_tool_id = String::new();
+            let mut current_tool_name = String::new();
+            let mut current_tool_input_json = String::new();
+            let mut in_tool_block = false;
 
             let mut byte_stream = std::pin::pin!(byte_stream);
 
@@ -187,15 +196,46 @@ impl Provider for AnthropicProvider {
                     let data = data_lines.join("\n");
 
                     match current_event_type.as_str() {
+                        "content_block_start" => {
+                            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
+                                if let Some(block) = parsed.get("content_block") {
+                                    if block.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                                        current_tool_id = block.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        current_tool_name = block.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                                        current_tool_input_json.clear();
+                                        in_tool_block = true;
+                                    }
+                                }
+                            }
+                        }
                         "content_block_delta" => {
                             if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&data) {
                                 if let Some(delta) = parsed.get("delta") {
-                                    if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
-                                        if !text.is_empty() {
-                                            yield ChatEvent::Delta { text: text.to_string() };
+                                    let delta_type = delta.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                    if delta_type == "input_json_delta" {
+                                        if let Some(partial) = delta.get("partial_json").and_then(|t| t.as_str()) {
+                                            current_tool_input_json.push_str(partial);
+                                        }
+                                    } else if delta_type == "text_delta" {
+                                        if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
+                                            if !text.is_empty() {
+                                                yield ChatEvent::Delta { text: text.to_string() };
+                                            }
                                         }
                                     }
                                 }
+                            }
+                        }
+                        "content_block_stop" => {
+                            if in_tool_block {
+                                let args = serde_json::from_str::<serde_json::Value>(&current_tool_input_json)
+                                    .unwrap_or(serde_json::Value::Object(Default::default()));
+                                yield ChatEvent::ToolUse {
+                                    id: current_tool_id.clone(),
+                                    name: current_tool_name.clone(),
+                                    args,
+                                };
+                                in_tool_block = false;
                             }
                         }
                         "message_start" => {

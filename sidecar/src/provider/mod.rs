@@ -29,6 +29,14 @@ pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     pub system: Option<String>,
     pub max_tokens: u32,
+    pub tools: Option<Vec<serde_json::Value>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolUseEvent {
+    pub id: String,
+    pub name: String,
+    pub args: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -36,6 +44,12 @@ pub struct ChatRequest {
 pub enum ChatEvent {
     #[serde(rename = "delta")]
     Delta { text: String },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: String,
+        name: String,
+        args: serde_json::Value,
+    },
     #[serde(rename = "suggested_command")]
     SuggestedCommand {
         command: String,
