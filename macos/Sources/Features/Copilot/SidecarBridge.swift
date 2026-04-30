@@ -71,54 +71,87 @@ final class SidecarBridge: ObservableObject {
     private func ensureSidecarRunning() {
         // Check if already running via socket
         if FileManager.default.fileExists(atPath: socketPath) {
-            // Try connecting — if it works, sidecar is alive
             return
         }
 
-        let sidecarPath = findSidecarBinary()
-        guard let path = sidecarPath else {
-            logger.error("decomptage-sidecar binary not found")
+        let sidecarBin = findSidecarBinary()
+        guard let binPath = sidecarBin else {
+            logger.error("decomptage-sidecar not found")
             return
         }
 
         let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: path)
+        proc.executableURL = URL(fileURLWithPath: binPath)
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
+
+        // If using bun, determine the script to run
+        if binPath.hasSuffix("/bun") || binPath.contains("bun") {
+            // Check for bundled sidecar.js (production)
+            if let resourcePath = Bundle.main.resourcePath,
+               FileManager.default.fileExists(atPath: "\(resourcePath)/sidecar/sidecar.js") {
+                proc.arguments = ["run", "\(resourcePath)/sidecar/sidecar.js"]
+            } else {
+                // Dev mode: run TypeScript source directly
+                let tsPath = URL(fileURLWithPath: #file)
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("sidecar-ts/src/index.ts")
+                    .path
+                proc.arguments = ["run", tsPath]
+                proc.currentDirectoryURL = URL(fileURLWithPath: tsPath)
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+            }
+        }
 
         do {
             try proc.run()
             self.process = proc
-            logger.info("sidecar spawned pid=\(proc.processIdentifier)")
-            // Give it a moment to bind the socket
-            Thread.sleep(forTimeInterval: 0.3)
+            logger.info("sidecar spawned pid=\(proc.processIdentifier) path=\(binPath)")
+            Thread.sleep(forTimeInterval: 0.5)
         } catch {
             logger.error("failed to spawn sidecar: \(error)")
         }
     }
 
     private func findSidecarBinary() -> String? {
-        // 1. Inside app bundle
-        if let bundlePath = Bundle.main.path(forAuxiliaryExecutable: "decomptage-sidecar") {
-            return bundlePath
+        // 1. Inside app bundle (production: bun + bundled JS)
+        let bundleSidecarDir = Bundle.main.resourcePath.map { "\($0)/sidecar" }
+        if let dir = bundleSidecarDir,
+           FileManager.default.fileExists(atPath: "\(dir)/sidecar.js") {
+            // Use bundled bun + sidecar.js
+            return "\(dir)/bun"  // Will be called with sidecar.js arg
         }
 
-        // 2. In the Cargo build output (dev mode)
-        let devPath = URL(fileURLWithPath: #file)
+        // 2. TypeScript sidecar in dev mode (preferred over Rust)
+        let tsDevPath = URL(fileURLWithPath: #file)
             .deletingLastPathComponent() // Copilot/
             .deletingLastPathComponent() // Features/
             .deletingLastPathComponent() // Sources/
             .deletingLastPathComponent() // macos/
-            .appendingPathComponent("sidecar/target/debug/decomptage-sidecar")
+            .appendingPathComponent("sidecar-ts/src/index.ts")
             .path
-        if FileManager.default.isExecutableFile(atPath: devPath) {
-            return devPath
+        if FileManager.default.fileExists(atPath: tsDevPath) {
+            // Find bun
+            let bunPath = shell("which bun").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !bunPath.isEmpty {
+                return bunPath  // Will be called with tsDevPath as arg
+            }
         }
 
-        // 3. In PATH
-        let whichResult = shell("which decomptage-sidecar")
-        if !whichResult.isEmpty {
-            return whichResult.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 3. Rust sidecar fallback (dev mode)
+        let rustDevPath = URL(fileURLWithPath: #file)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("sidecar/target/debug/decomptage-sidecar")
+            .path
+        if FileManager.default.isExecutableFile(atPath: rustDevPath) {
+            return rustDevPath
         }
 
         return nil
