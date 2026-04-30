@@ -1,24 +1,27 @@
-use futures::StreamExt;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::OwnedWriteHalf;
-use tracing::{info, warn};
+use tokio::sync::mpsc;
+use tracing::info;
 
-use crate::codeblock::CodeblockDetector;
+use crate::agent_loop::{self, AgentToClient, ClientToAgent};
 use crate::provider::anthropic::AnthropicProvider;
 use crate::provider::bedrock::BedrockProvider;
 use crate::provider::gemini::GeminiProvider;
 use crate::provider::ollama::OllamaProvider;
 use crate::provider::openai::OpenAIProvider;
-use crate::provider::{ChatEvent, ChatMessage, ChatRequest, ContentPart, Provider};
-use crate::rpc::{Notification, Request, Response};
+use crate::provider::{ChatMessage, ChatRequest, ContentPart, Provider};
+use crate::rpc::{Request, Response};
 use crate::tools;
 
 pub async fn handle_connection(stream: UnixStream) {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader).lines();
     let mut context_buffer: Vec<String> = Vec::new();
+
+    // Channel for routing messages to an active agent loop
+    let mut agent_tx: Option<mpsc::Sender<ClientToAgent>> = None;
 
     info!("client connected");
 
@@ -45,7 +48,7 @@ pub async fn handle_connection(stream: UnixStream) {
                     json!({
                         "session_id": uuid::Uuid::new_v4().to_string(),
                         "providers": providers,
-                        "features": ["attachments", "streaming", "context"]
+                        "features": ["attachments", "streaming", "context", "tools"]
                     }),
                 );
                 let _ = send_line(&mut writer, &resp).await;
@@ -53,7 +56,6 @@ pub async fn handle_connection(stream: UnixStream) {
             "context.push" => {
                 if let Some(payload) = req.params.get("payload") {
                     if let Some(text) = payload.get("text").and_then(|t| t.as_str()) {
-                        // Keep a rolling buffer of recent context (max 10 entries, ~256KB)
                         context_buffer.push(text.to_string());
                         if context_buffer.len() > 10 {
                             context_buffer.remove(0);
@@ -64,7 +66,6 @@ pub async fn handle_connection(stream: UnixStream) {
                 let _ = send_line(&mut writer, &resp).await;
             }
             "settings.update" => {
-                // Dynamically set env vars for provider credentials
                 if let Some(vars) = req.params.as_object() {
                     for (key, value) in vars {
                         if let Some(v) = value.as_str() {
@@ -84,9 +85,78 @@ pub async fn handle_connection(stream: UnixStream) {
                 );
                 let _ = send_line(&mut writer, &resp).await;
 
-                handle_chat_send(&req.params, &context_buffer, &mut writer).await;
-                // Clear context after use so it doesn't repeat
+                // Build the provider and request
+                let provider = build_provider(&req.params).await;
+                let Some(provider) = provider else {
+                    let notif = json!({"method": "chat.error", "params": {"message": "Failed to build provider"}});
+                    let _ = writer.write_all(format!("{}\n", notif).as_bytes()).await;
+                    continue;
+                };
+
+                let chat_req = build_chat_request(&req.params);
+
+                // Create channels for the agent loop
+                let (to_agent_tx, mut to_agent_rx) = mpsc::channel::<ClientToAgent>(32);
+                let (from_agent_tx, mut from_agent_rx) = mpsc::channel::<AgentToClient>(64);
+                agent_tx = Some(to_agent_tx);
+
+                let context = context_buffer.clone();
                 context_buffer.clear();
+
+                // Spawn the agent loop
+                tokio::spawn(async move {
+                    agent_loop::run_agent_loop(
+                        provider,
+                        chat_req,
+                        &context,
+                        &from_agent_tx,
+                        &mut to_agent_rx,
+                    ).await;
+                });
+
+                // Forward agent notifications to the client until done
+                while let Some(msg) = from_agent_rx.recv().await {
+                    match msg {
+                        AgentToClient::Notification(method, params) => {
+                            let notif = json!({"method": method, "params": params});
+                            let _ = writer.write_all(format!("{}\n", notif).as_bytes()).await;
+                            let _ = writer.flush().await;
+                        }
+                        AgentToClient::Done => break,
+                    }
+                }
+
+                agent_tx = None;
+            }
+            // Route tool responses to the active agent loop
+            "chat.tool_approval_response" => {
+                if let Some(tx) = &agent_tx {
+                    let tool_call_id = req.params.get("tool_call_id")
+                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let approved = req.params.get("approved")
+                        .and_then(|v| v.as_bool()).unwrap_or(false);
+                    let _ = tx.send(ClientToAgent::ToolApprovalResponse { tool_call_id, approved }).await;
+                }
+            }
+            "chat.read_terminal_response" => {
+                if let Some(tx) = &agent_tx {
+                    let request_id = req.params.get("request_id")
+                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let text = req.params.get("text")
+                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let _ = tx.send(ClientToAgent::ReadTerminalResponse { request_id, text }).await;
+                }
+            }
+            "chat.run_command_result" => {
+                if let Some(tx) = &agent_tx {
+                    let tool_call_id = req.params.get("tool_call_id")
+                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let output = req.params.get("output")
+                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let exit_code = req.params.get("exit_code")
+                        .and_then(|v| v.as_i64()).unwrap_or(-1) as i32;
+                    let _ = tx.send(ClientToAgent::RunCommandResult { tool_call_id, output, exit_code }).await;
+                }
             }
             _ => {
                 let resp = Response::error(
@@ -102,79 +172,38 @@ pub async fn handle_connection(stream: UnixStream) {
     info!("client disconnected");
 }
 
-async fn handle_chat_send(
-    params: &Value,
-    context_buffer: &[String],
-    writer: &mut tokio::net::unix::OwnedWriteHalf,
-) {
-    let provider_id = params
-        .get("provider")
-        .and_then(|v| v.as_str())
-        .unwrap_or("anthropic");
+async fn build_provider(params: &Value) -> Option<Box<dyn Provider>> {
+    let provider_id = params.get("provider").and_then(|v| v.as_str()).unwrap_or("anthropic");
 
-    let provider: Box<dyn Provider> = match provider_id {
+    match provider_id {
         "anthropic" => {
-            let key = match std::env::var("ANTHROPIC_API_KEY") {
-                Ok(k) => k,
-                Err(_) => {
-                    let notif = Notification {
-                        method: "chat.error",
-                        params: json!({"message": "ANTHROPIC_API_KEY not set"}),
-                    };
-                    let _ = send_line(writer, &notif).await;
-                    return;
-                }
-            };
-            Box::new(AnthropicProvider::new(key))
+            let key = std::env::var("ANTHROPIC_API_KEY").ok()?;
+            Some(Box::new(AnthropicProvider::new(key)))
         }
         "openai" => {
-            let key = match std::env::var("OPENAI_API_KEY") {
-                Ok(k) => k,
-                Err(_) => {
-                    let notif = Notification {
-                        method: "chat.error",
-                        params: json!({"message": "OPENAI_API_KEY not set"}),
-                    };
-                    let _ = send_line(writer, &notif).await;
-                    return;
-                }
-            };
-            Box::new(OpenAIProvider::new(key))
+            let key = std::env::var("OPENAI_API_KEY").ok()?;
+            Some(Box::new(OpenAIProvider::new(key)))
         }
         "gemini" => {
-            let key = match std::env::var("GEMINI_API_KEY") {
-                Ok(k) => k,
-                Err(_) => {
-                    let notif = Notification {
-                        method: "chat.error",
-                        params: json!({"message": "GEMINI_API_KEY not set"}),
-                    };
-                    let _ = send_line(writer, &notif).await;
-                    return;
-                }
-            };
-            Box::new(GeminiProvider::new(key))
+            let key = std::env::var("GEMINI_API_KEY").ok()?;
+            Some(Box::new(GeminiProvider::new(key)))
         }
         "ollama" => {
-            let url = std::env::var("OLLAMA_URL")
-                .unwrap_or_else(|_| "http://localhost:11434".to_string());
-            Box::new(OllamaProvider::with_url(url))
+            let url = std::env::var("OLLAMA_URL").unwrap_or_else(|_| "http://localhost:11434".to_string());
+            Some(Box::new(OllamaProvider::with_url(url)))
         }
         "bedrock" => {
             let region = std::env::var("AWS_REGION")
                 .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
                 .unwrap_or_else(|_| "us-east-1".to_string());
-            Box::new(BedrockProvider::new(region))
+            Some(Box::new(BedrockProvider::new(region)))
         }
-        _ => {
-            let notif = Notification {
-                method: "chat.error",
-                params: json!({"message": format!("unknown provider: {}", provider_id)}),
-            };
-            let _ = send_line(writer, &notif).await;
-            return;
-        }
-    };
+        _ => None,
+    }
+}
+
+fn build_chat_request(params: &Value) -> ChatRequest {
+    let provider_id = params.get("provider").and_then(|v| v.as_str()).unwrap_or("anthropic");
 
     let default_model = match provider_id {
         "anthropic" => "claude-sonnet-4-6".to_string(),
@@ -185,176 +214,22 @@ async fn handle_chat_send(
             .unwrap_or_else(|_| "anthropic.claude-sonnet-4-6-20250514-v1:0".to_string()),
         _ => "unknown".to_string(),
     };
-    let model = params
-        .get("model")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or(default_model);
 
-    let mut messages = parse_messages(params);
+    let model = params.get("model").and_then(|v| v.as_str())
+        .map(|s| s.to_string()).unwrap_or(default_model);
+
+    let messages = parse_messages(params);
+
     let base_system = params.get("system").and_then(|v| v.as_str()).unwrap_or(
-        "You are a senior developer assistant embedded in a terminal emulator. You can see the user's terminal output in real-time. Help them with commands, debugging, and development tasks. Be concise and practical. When suggesting commands, put them in ```sh code blocks so they appear as actionable cards."
+        "You are a senior developer assistant embedded in a terminal emulator. You can see the user's terminal output in real-time. You have tools to read files, read the terminal, suggest commands, and run commands (with user approval). Help the user with development tasks. When guiding through multi-step processes, suggest one command at a time and wait for the result before proceeding."
     );
 
-    let system = Some(base_system.to_string());
-
-    // Inject terminal context as a user message prepended to the conversation,
-    // so the LLM sees it as part of the chat flow (not hidden in system prompt).
-    if !context_buffer.is_empty() {
-        let context = context_buffer.join("\n---\n");
-        let context_msg = ChatMessage {
-            role: "user".to_string(),
-            content: vec![ContentPart::Text {
-                text: format!(
-                    "[Terminal context - this is what's currently visible in my terminal. Do not respond to this directly, just use it as context for my questions.]\n\n```\n{}\n```",
-                    context
-                ),
-            }],
-        };
-        // Insert at position 0 (before user messages) so it's always the first thing
-        messages.insert(0, context_msg);
-    }
-
-    let req = ChatRequest {
+    ChatRequest {
         model,
         messages,
-        system,
-        max_tokens: params
-            .get("max_tokens")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(4096) as u32,
+        system: Some(base_system.to_string()),
+        max_tokens: params.get("max_tokens").and_then(|v| v.as_u64()).unwrap_or(4096) as u32,
         tools: Some(tools::tool_definitions()),
-    };
-
-    // Debug: log the full request if DECOMPTAGE_DEBUG=1
-    if std::env::var("DECOMPTAGE_DEBUG").unwrap_or_default() == "1" {
-        tracing::info!("--- chat.send debug ---");
-        tracing::info!("provider: {}", provider_id);
-        tracing::info!("model: {}", req.model);
-        tracing::info!("system: {}", req.system.as_deref().unwrap_or("(none)"));
-        for (i, msg) in req.messages.iter().enumerate() {
-            let content_preview: String = msg.content.iter().map(|p| match p {
-                ContentPart::Text { text } => {
-                    if text.len() > 200 { format!("{}...", &text[..200]) } else { text.clone() }
-                }
-                ContentPart::Image { .. } => "[image]".to_string(),
-            }).collect::<Vec<_>>().join(" ");
-            tracing::info!("  msg[{}] role={} content={}", i, msg.role, content_preview);
-        }
-        tracing::info!("--- end debug ---");
-    }
-
-    match provider.chat_stream(req).await {
-        Ok(mut stream) => {
-            let mut codeblock = CodeblockDetector::new();
-
-            while let Some(event) = stream.next().await {
-                let notif = match &event {
-                    ChatEvent::Delta { text } => {
-                        // Feed into codeblock detector
-                        if let Some(command) = codeblock.feed(text) {
-                            let cmd_notif = Notification {
-                                method: "chat.suggested_command",
-                                params: json!({
-                                    "command": command,
-                                    "explanation": "Detected from code block",
-                                    "source": "codeblock_detected"
-                                }),
-                            };
-                            let _ = send_line(writer, &cmd_notif).await;
-                        }
-
-                        Notification {
-                            method: "chat.delta",
-                            params: json!({"text": text}),
-                        }
-                    }
-                    ChatEvent::ToolUse { id, name, args } => {
-                        // Parse and route tool calls
-                        if let Some(tool_call) = tools::ToolCall::from_raw(id, name, args) {
-                            match &tool_call {
-                                tools::ToolCall::SuggestCommand { command, explanation, danger_level, .. } => {
-                                    Notification {
-                                        method: "chat.suggested_command",
-                                        params: json!({
-                                            "command": command,
-                                            "explanation": explanation,
-                                            "danger_level": danger_level,
-                                            "source": "tool_call"
-                                        }),
-                                    }
-                                }
-                                tools::ToolCall::RunCommand { command, explanation, .. } => {
-                                    let danger = tool_call.danger_level();
-                                    Notification {
-                                        method: "chat.tool_approval_request",
-                                        params: json!({
-                                            "tool_call_id": tool_call.id(),
-                                            "tool_name": "run_command",
-                                            "command": command,
-                                            "explanation": explanation,
-                                            "danger_level": danger,
-                                        }),
-                                    }
-                                }
-                                tools::ToolCall::ReadTerminal { .. } => {
-                                    Notification {
-                                        method: "chat.read_terminal_request",
-                                        params: json!({
-                                            "request_id": tool_call.id(),
-                                        }),
-                                    }
-                                }
-                                tools::ToolCall::ReadFile { path, lines, .. } => {
-                                    // Execute read_file directly (no approval for cwd)
-                                    let content = read_file_tool(path, *lines).await;
-                                    Notification {
-                                        method: "chat.tool_result",
-                                        params: json!({
-                                            "tool_call_id": tool_call.id(),
-                                            "result": content,
-                                        }),
-                                    }
-                                }
-                            }
-                        } else {
-                            Notification {
-                                method: "chat.error",
-                                params: json!({"message": format!("unknown tool: {}", name)}),
-                            }
-                        }
-                    }
-                    ChatEvent::Done {
-                        input_tokens,
-                        output_tokens,
-                    } => Notification {
-                        method: "chat.done",
-                        params: json!({"usage": {"input_tokens": input_tokens, "output_tokens": output_tokens}}),
-                    },
-                    ChatEvent::Error { message } => Notification {
-                        method: "chat.error",
-                        params: json!({"message": message}),
-                    },
-                    ChatEvent::SuggestedCommand {
-                        command,
-                        explanation,
-                    } => Notification {
-                        method: "chat.suggested_command",
-                        params: json!({"command": command, "explanation": explanation, "source": "tool_call"}),
-                    },
-                };
-                if send_line(writer, &notif).await.is_err() {
-                    break;
-                }
-            }
-        }
-        Err(e) => {
-            let notif = Notification {
-                method: "chat.error",
-                params: json!({"message": e}),
-            };
-            let _ = send_line(writer, &notif).await;
-        }
     }
 }
 
@@ -424,17 +299,6 @@ async fn get_available_providers() -> Value {
             "configured": std::env::var("AWS_ACCESS_KEY_ID").is_ok() || std::env::var("AWS_PROFILE").is_ok()
         }
     ])
-}
-
-async fn read_file_tool(path: &str, max_lines: Option<u32>) -> String {
-    let max = max_lines.unwrap_or(500) as usize;
-    match tokio::fs::read_to_string(path).await {
-        Ok(content) => {
-            let lines: Vec<&str> = content.lines().take(max).collect();
-            lines.join("\n")
-        }
-        Err(e) => format!("Error reading file: {}", e),
-    }
 }
 
 async fn send_line(

@@ -1,3 +1,4 @@
+mod agent_loop;
 mod attachments;
 mod codeblock;
 mod history;
