@@ -172,18 +172,20 @@ final class ChatViewModel: ObservableObject {
         messages.append(ChatMessage(role: "assistant", content: "", isStreaming: true))
         isStreaming = true
 
-        let apiMessages: [[String: Any]] = messages.dropLast().map { msg in
-            ["role": msg.role, "content": msg.content]
-        }
+        // Send a synthetic user message asking the LLM to comment on what it sees.
+        // The sidecar will prepend the terminal context from context_buffer automatically.
+        let autoMessages: [[String: Any]] = [
+            ["role": "user", "content": "Look at my terminal context and briefly comment if anything needs attention. If everything looks routine, just say [no comment]."]
+        ]
 
         bridge.send(
             method: "chat.send",
             params: [
                 "provider": selectedProvider,
                 "model": selectedModel,
-                "messages": Array(apiMessages),
-                "max_tokens": 1024,
-                "system": "You are a terminal copilot. RULES: 1) If nothing notable happened (routine prompt, ls, cd, clear), respond ONLY with \"[no comment]\" — nothing else. 2) If there IS something worth noting (error, warning, failed command, surprising output), write ONE sentence max. 3) Never explain concepts unprompted. 4) Never write code unless asked. 5) Respond in the same language the user's terminal is using.",
+                "messages": autoMessages,
+                "max_tokens": 256,
+                "system": "You are a senior developer assistant watching a terminal. RULES: 1) If nothing notable happened (routine prompt, successful command, ls, cd, clear), respond ONLY with \"[no comment]\". 2) If there IS something worth noting (error, warning, failed command, unexpected output), write ONE sentence max pointing it out. 3) Never explain concepts. 4) Never write code blocks unless there's a clear fix. 5) Match the user's language.",
             ]
         ) { [weak self] result in
             if case .failure(let err) = result {
