@@ -56,9 +56,17 @@ pub async fn handle_connection(stream: UnixStream) {
             "context.push" => {
                 if let Some(payload) = req.params.get("payload") {
                     if let Some(text) = payload.get("text").and_then(|t| t.as_str()) {
-                        context_buffer.push(text.to_string());
-                        if context_buffer.len() > 10 {
-                            context_buffer.remove(0);
+                        let kind = req.params.get("kind").and_then(|k| k.as_str()).unwrap_or("snapshot");
+                        if kind == "full_screen" {
+                            // Replace entire buffer with the latest full screen
+                            context_buffer.clear();
+                            context_buffer.push(text.to_string());
+                        } else {
+                            // Legacy diff-based: append
+                            context_buffer.push(text.to_string());
+                            if context_buffer.len() > 10 {
+                                context_buffer.remove(0);
+                            }
                         }
                     }
                 }

@@ -20,8 +20,9 @@ final class ContextCapture: ObservableObject {
     /// Published so the chat pane can show a warning banner
     @Published var secretsDetected: Bool = false
 
-    /// Debounce interval in seconds
-    private let debounceInterval: TimeInterval = 0.5
+    /// Debounce interval in seconds — long enough to capture complete command output,
+    /// not individual keystrokes. 3s means: if the screen hasn't changed for 3s, capture it.
+    private let debounceInterval: TimeInterval = 3.0
 
     /// Patterns that indicate secrets in terminal output
     private static let secretPatterns: [String] = [
@@ -105,30 +106,24 @@ final class ContextCapture: ObservableObject {
                 let changedCount = newLines.filter { !oldSet.contains($0) }.count
                 let changeRatio = Double(changedCount) / Double(totalLines)
                 if changeRatio > 0.8 {
-                    // Likely alt-screen entered or exited — skip this tick
                     lastSnapshot = current
                     return
                 }
             }
         }
 
-        // Compute a simple diff: new lines added since last snapshot
-        let delta: String
-        if lastSnapshot.isEmpty {
-            delta = current
-        } else {
-            let oldLines = Set(lastSnapshot.components(separatedBy: "\n"))
-            let newLines = current.components(separatedBy: "\n")
-            let added = newLines.filter { !oldLines.contains($0) && !$0.isEmpty }
-            delta = added.joined(separator: "\n")
+        // Ignore tiny changes (< 10 chars difference) — likely just cursor blink or typing a few chars
+        let sizeDiff = abs(current.count - lastSnapshot.count)
+        let contentChanged = current != lastSnapshot
+        if contentChanged && sizeDiff < 10 && !lastSnapshot.isEmpty {
+            // Don't update lastSnapshot — wait for a bigger change
+            return
         }
 
         lastSnapshot = current
 
-        guard !delta.isEmpty else { return }
-
         // Check for secrets before sending
-        if containsSecrets(delta) {
+        if containsSecrets(current) {
             DispatchQueue.main.async {
                 self.secretsDetected = true
             }
@@ -140,11 +135,14 @@ final class ContextCapture: ObservableObject {
             self.secretsDetected = false
         }
 
+        // Send the FULL screen content (not a diff). The sidecar replaces
+        // its context buffer with the latest snapshot so the LLM always
+        // sees the complete, current terminal state.
         bridge.send(
             method: "context.push",
             params: [
-                "kind": "snapshot",
-                "payload": ["text": delta],
+                "kind": "full_screen",
+                "payload": ["text": current],
             ]
         )
 
