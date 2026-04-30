@@ -1,0 +1,18 @@
+{
+  "name": "decomptage-sidecar",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun --minify"
+  },
+  "dependencies": {
+    "ai": "^4",
+    "@ai-sdk/anthropic": "^1",
+    "@ai-sdk/openai": "^1",
+    "@ai-sdk/google": "^1",
+    "@ai-sdk/amazon-bedrock": "^1",
+    "ollama-ai-provider": "^1",
+    "zod": "^3.23"
+  }
+}

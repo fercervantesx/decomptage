@@ -30,3 +30,5 @@ glad.zip
 vgcore.*
 
 sidecar/target/
+sidecar-ts/node_modules/
+sidecar-ts/dist/
