@@ -237,8 +237,54 @@ pub async fn run_agent_loop(
                         _ => "Failed to read terminal.".to_string(),
                     }
                 }
-                ToolCall::ReadFile { path, lines, .. } => {
-                    read_file_tool(path, *lines).await
+                ToolCall::ReadFile { path, start_line, end_line, .. } => {
+                    read_file_tool(path, *start_line, *end_line).await
+                }
+                ToolCall::WriteFile { path, content, .. } => {
+                    // Write requires approval — send request
+                    let _ = out_tx.send(AgentToClient::Notification(
+                        "chat.tool_approval_request".to_string(),
+                        json!({
+                            "tool_call_id": id,
+                            "tool_name": "write_file",
+                            "command": format!("Write {} bytes to {}", content.len(), path),
+                            "explanation": format!("Create/overwrite file: {}", path),
+                            "danger_level": "caution",
+                        }),
+                    )).await;
+                    match wait_for_approval(in_rx, id).await {
+                        Some(ClientToAgent::ToolApprovalResponse { approved: true, .. }) => {
+                            write_file_tool(path, content).await
+                        }
+                        _ => "User denied file write.".to_string(),
+                    }
+                }
+                ToolCall::EditFile { path, old_string, new_string, .. } => {
+                    let _ = out_tx.send(AgentToClient::Notification(
+                        "chat.tool_approval_request".to_string(),
+                        json!({
+                            "tool_call_id": id,
+                            "tool_name": "edit_file",
+                            "command": format!("Edit {}", path),
+                            "explanation": format!("Replace text in {}", path),
+                            "danger_level": "caution",
+                        }),
+                    )).await;
+                    match wait_for_approval(in_rx, id).await {
+                        Some(ClientToAgent::ToolApprovalResponse { approved: true, .. }) => {
+                            edit_file_tool(path, old_string, new_string).await
+                        }
+                        _ => "User denied file edit.".to_string(),
+                    }
+                }
+                ToolCall::ListDirectory { path, recursive, .. } => {
+                    list_directory_tool(path.as_deref(), *recursive).await
+                }
+                ToolCall::SearchFiles { pattern, path, file_pattern, .. } => {
+                    search_files_tool(pattern, path.as_deref(), file_pattern.as_deref()).await
+                }
+                ToolCall::WebFetch { url, max_length, .. } => {
+                    web_fetch_tool(url, *max_length).await
                 }
             };
 
@@ -320,13 +366,179 @@ async fn wait_for_terminal_read(
     .unwrap_or(None)
 }
 
-async fn read_file_tool(path: &str, max_lines: Option<u32>) -> String {
-    let max = max_lines.unwrap_or(500) as usize;
+async fn read_file_tool(path: &str, start_line: Option<u32>, end_line: Option<u32>) -> String {
     match tokio::fs::read_to_string(path).await {
         Ok(content) => {
-            let lines: Vec<&str> = content.lines().take(max).collect();
-            lines.join("\n")
+            let lines: Vec<&str> = content.lines().collect();
+            let start = start_line.map(|s| (s as usize).saturating_sub(1)).unwrap_or(0);
+            let end = end_line.map(|e| e as usize).unwrap_or(lines.len()).min(start + 1000);
+            lines[start..end.min(lines.len())]
+                .iter()
+                .enumerate()
+                .map(|(i, l)| format!("{:4} | {}", start + i + 1, l))
+                .collect::<Vec<_>>()
+                .join("\n")
         }
         Err(e) => format!("Error reading file: {}", e),
     }
+}
+
+async fn write_file_tool(path: &str, content: &str) -> String {
+    // Create parent directories if needed
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    match tokio::fs::write(path, content).await {
+        Ok(_) => format!("Successfully wrote {} bytes to {}", content.len(), path),
+        Err(e) => format!("Error writing file: {}", e),
+    }
+}
+
+async fn edit_file_tool(path: &str, old_string: &str, new_string: &str) -> String {
+    match tokio::fs::read_to_string(path).await {
+        Ok(content) => {
+            let count = content.matches(old_string).count();
+            if count == 0 {
+                return format!("Error: old_string not found in {}", path);
+            }
+            if count > 1 {
+                return format!("Error: old_string found {} times in {} (must be unique)", count, path);
+            }
+            let new_content = content.replacen(old_string, new_string, 1);
+            match tokio::fs::write(path, &new_content).await {
+                Ok(_) => format!("Successfully edited {}", path),
+                Err(e) => format!("Error writing file: {}", e),
+            }
+        }
+        Err(e) => format!("Error reading file: {}", e),
+    }
+}
+
+async fn list_directory_tool(path: Option<&str>, recursive: bool) -> String {
+    let dir = path.unwrap_or(".");
+    if recursive {
+        // Use find-like recursive listing (max 3 levels)
+        match tokio::process::Command::new("find")
+            .args([dir, "-maxdepth", "3", "-type", "f", "-o", "-type", "d"])
+            .output()
+            .await
+        {
+            Ok(output) => {
+                let text = String::from_utf8_lossy(&output.stdout);
+                let lines: Vec<&str> = text.lines().take(200).collect();
+                lines.join("\n")
+            }
+            Err(e) => format!("Error listing directory: {}", e),
+        }
+    } else {
+        match tokio::fs::read_dir(dir).await {
+            Ok(mut entries) => {
+                let mut items = Vec::new();
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    let is_dir = entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
+                    items.push(if is_dir { format!("{}/", name) } else { name });
+                }
+                items.sort();
+                items.join("\n")
+            }
+            Err(e) => format!("Error listing directory: {}", e),
+        }
+    }
+}
+
+async fn search_files_tool(pattern: &str, path: Option<&str>, file_pattern: Option<&str>) -> String {
+    let dir = path.unwrap_or(".");
+    let mut args = vec!["-rn".to_string(), pattern.to_string(), dir.to_string()];
+    if let Some(fp) = file_pattern {
+        args = vec!["-rn".to_string(), "--include".to_string(), fp.to_string(), pattern.to_string(), dir.to_string()];
+    }
+
+    match tokio::process::Command::new("grep")
+        .args(&args)
+        .output()
+        .await
+    {
+        Ok(output) => {
+            let text = String::from_utf8_lossy(&output.stdout);
+            let lines: Vec<&str> = text.lines().take(50).collect();
+            if lines.is_empty() {
+                "No matches found.".to_string()
+            } else {
+                lines.join("\n")
+            }
+        }
+        Err(e) => format!("Error searching: {}", e),
+    }
+}
+
+async fn web_fetch_tool(url: &str, max_length: Option<u32>) -> String {
+    let max = max_length.unwrap_or(10000) as usize;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap();
+
+    match client.get(url).send().await {
+        Ok(resp) => {
+            if !resp.status().is_success() {
+                return format!("HTTP error: {}", resp.status());
+            }
+            match resp.text().await {
+                Ok(body) => {
+                    // Strip HTML tags for cleaner output
+                    let text = strip_html_tags(&body);
+                    if text.len() > max {
+                        format!("{}...\n[truncated at {} chars]", &text[..max], max)
+                    } else {
+                        text
+                    }
+                }
+                Err(e) => format!("Error reading response: {}", e),
+            }
+        }
+        Err(e) => format!("Error fetching URL: {}", e),
+    }
+}
+
+fn strip_html_tags(html: &str) -> String {
+    let mut result = String::new();
+    let mut in_tag = false;
+    let mut in_script = false;
+
+    for c in html.chars() {
+        if c == '<' {
+            in_tag = true;
+            // Check if entering script/style
+            let lower = html[html.find(c).unwrap_or(0)..].to_lowercase();
+            if lower.starts_with("<script") || lower.starts_with("<style") {
+                in_script = true;
+            }
+            if lower.starts_with("</script") || lower.starts_with("</style") {
+                in_script = false;
+            }
+        } else if c == '>' {
+            in_tag = false;
+        } else if !in_tag && !in_script {
+            result.push(c);
+        }
+    }
+
+    // Collapse multiple newlines/spaces
+    let mut prev_newline = false;
+    let mut cleaned = String::new();
+    for line in result.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            if !prev_newline {
+                cleaned.push('\n');
+                prev_newline = true;
+            }
+        } else {
+            cleaned.push_str(trimmed);
+            cleaned.push('\n');
+            prev_newline = false;
+        }
+    }
+    cleaned
 }
