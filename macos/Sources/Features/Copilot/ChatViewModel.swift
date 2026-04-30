@@ -144,6 +144,38 @@ final class ChatViewModel: ObservableObject {
         )
         if let idx = messages.lastIndex(where: { $0.toolApproval?.toolCallId == id }) {
             messages[idx].toolApproval?.resolved = true
+
+            // Execute the command in the terminal
+            let command = messages[idx].toolApproval!.command
+            executeCommandInTerminal(command: command, toolCallId: id)
+        }
+    }
+
+    private func executeCommandInTerminal(command: String, toolCallId: String) {
+        guard let surface = focusedSurface else {
+            bridge.send(
+                method: "chat.run_command_result",
+                params: ["tool_call_id": toolCallId, "output": "No terminal surface available", "exit_code": -1]
+            )
+            return
+        }
+
+        // Write command + newline to PTY (executes it)
+        let commandWithNewline = command + "\n"
+        ghostty_surface_text(surface, commandWithNewline, UInt(commandWithNewline.utf8.count))
+
+        // Wait for output to settle, then read the screen and send it back
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            guard let self = self else { return }
+            let output = self.readTerminalForTool()
+            self.bridge.send(
+                method: "chat.run_command_result",
+                params: [
+                    "tool_call_id": toolCallId,
+                    "output": output,
+                    "exit_code": 0,  // We can't easily get exit code without shell integration
+                ]
+            )
         }
     }
 
