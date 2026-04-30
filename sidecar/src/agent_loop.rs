@@ -5,8 +5,7 @@ use tracing::info;
 
 use crate::codeblock::CodeblockDetector;
 use crate::provider::{ChatEvent, ChatMessage, ChatRequest, ContentPart, Provider};
-use crate::rpc::Notification;
-use crate::tools::{self, ToolCall};
+use crate::tools::ToolCall;
 
 /// Messages the agent loop sends to the connection handler (for the client)
 #[derive(Debug)]
@@ -44,6 +43,25 @@ pub async fn run_agent_loop(
             }],
         };
         request.messages.insert(0, context_msg);
+    }
+
+    // Debug logging
+    if std::env::var("DECOMPTAGE_DEBUG").unwrap_or_default() == "1" {
+        info!("--- agent_loop debug ---");
+        info!("model: {}", request.model);
+        info!("system: {}", request.system.as_deref().unwrap_or("(none)"));
+        info!("tools: {}", request.tools.as_ref().map(|t| t.len()).unwrap_or(0));
+        info!("context entries: {}", context_buffer.len());
+        for (i, msg) in request.messages.iter().enumerate() {
+            let preview: String = msg.content.iter().map(|p| match p {
+                ContentPart::Text { text } => {
+                    if text.len() > 300 { format!("{}...[truncated]", &text[..300]) } else { text.clone() }
+                }
+                ContentPart::Image { .. } => "[image]".to_string(),
+            }).collect::<Vec<_>>().join(" ");
+            info!("  msg[{}] role={} | {}", i, msg.role, preview);
+        }
+        info!("--- end debug ---");
     }
 
     let max_tool_iterations = 10;

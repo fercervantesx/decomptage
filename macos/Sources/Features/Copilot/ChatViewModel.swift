@@ -261,11 +261,28 @@ final class ChatViewModel: ObservableObject {
         messages.append(ChatMessage(role: "assistant", content: "", isStreaming: true))
         isStreaming = true
 
-        // Send a synthetic user message asking the LLM to comment on what it sees.
-        // The sidecar will prepend the terminal context from context_buffer automatically.
-        let autoMessages: [[String: Any]] = [
-            ["role": "user", "content": "Based on my terminal output, is there an error or something I should fix? If yes, suggest the fix in one sentence with a command if applicable. If everything looks normal, respond with exactly: [no comment]"]
-        ]
+        // Build the auto-comment request based on conversation state.
+        // If there's an active conversation, continue it naturally.
+        // If no conversation, only comment on errors.
+        let hasConversation = !messages.isEmpty
+        let systemPrompt: String
+        let userPrompt: String
+
+        if hasConversation {
+            // Active conversation — continue guiding based on what happened
+            systemPrompt = "You are a senior developer assistant embedded in a terminal. You're helping the user with a task. You just received new terminal output showing what happened after the last interaction. Continue the conversation naturally: acknowledge what happened, point out issues, or suggest the next step. Be concise (2-3 sentences). Use ```sh code blocks for commands."
+            userPrompt = "Here's what just happened in my terminal. What should I do next? If nothing interesting happened, say [no comment]."
+        } else {
+            // No conversation — strict error-only mode
+            systemPrompt = "You are a developer assistant watching a terminal. Only respond if there's a clear error, failed command, or problem that needs fixing. Explain the issue and suggest a fix. If everything looks normal, respond with exactly: [no comment]"
+            userPrompt = "Is there anything wrong in my terminal that I should fix? If not, say [no comment]."
+        }
+
+        // Include conversation history so the LLM has context of what it previously suggested
+        var autoMessages: [[String: Any]] = messages.map { msg in
+            ["role": msg.role, "content": msg.content] as [String: Any]
+        }
+        autoMessages.append(["role": "user", "content": userPrompt])
 
         bridge.send(
             method: "chat.send",
@@ -273,8 +290,8 @@ final class ChatViewModel: ObservableObject {
                 "provider": selectedProvider,
                 "model": selectedModel,
                 "messages": autoMessages,
-                "max_tokens": 150,
-                "system": "You are a developer assistant watching a terminal. ONLY speak when there is an actionable problem (error, failed command, misconfiguration). Suggest a FIX, not a description. If the terminal shows normal output (successful commands, prompts, navigation), respond with ONLY the text \"[no comment]\" and nothing else. Never narrate what the user is doing. Never describe environment variables unless they're causing an error. One sentence max.",
+                "max_tokens": 512,
+                "system": systemPrompt,
             ]
         ) { [weak self] result in
             if case .failure(let err) = result {
