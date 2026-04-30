@@ -66,7 +66,7 @@ final class ChatViewModel: ObservableObject {
 
     /// Minimum time between auto-comments (prevents flooding)
     private var lastAutoCommentTime: Date = .distantPast
-    private let autoCommentCooldown: TimeInterval = 30.0
+    private let autoCommentCooldown: TimeInterval = 15.0
 
     /// Auto-commenting only activates after the first terminal context push
     /// (i.e., the user typed something and the screen changed). Silent during
@@ -175,7 +175,7 @@ final class ChatViewModel: ObservableObject {
         // Send a synthetic user message asking the LLM to comment on what it sees.
         // The sidecar will prepend the terminal context from context_buffer automatically.
         let autoMessages: [[String: Any]] = [
-            ["role": "user", "content": "Look at my terminal context and briefly comment if anything needs attention. If everything looks routine, just say [no comment]."]
+            ["role": "user", "content": "Based on my terminal output, is there an error or something I should fix? If yes, suggest the fix in one sentence with a command if applicable. If everything looks normal, respond with exactly: [no comment]"]
         ]
 
         bridge.send(
@@ -184,8 +184,8 @@ final class ChatViewModel: ObservableObject {
                 "provider": selectedProvider,
                 "model": selectedModel,
                 "messages": autoMessages,
-                "max_tokens": 256,
-                "system": "You are a senior developer assistant watching a terminal. RULES: 1) If nothing notable happened (routine prompt, successful command, ls, cd, clear), respond ONLY with \"[no comment]\". 2) If there IS something worth noting (error, warning, failed command, unexpected output), write ONE sentence max pointing it out. 3) Never explain concepts. 4) Never write code blocks unless there's a clear fix. 5) Match the user's language.",
+                "max_tokens": 150,
+                "system": "You are a developer assistant watching a terminal. ONLY speak when there is an actionable problem (error, failed command, misconfiguration). Suggest a FIX, not a description. If the terminal shows normal output (successful commands, prompts, navigation), respond with ONLY the text \"[no comment]\" and nothing else. Never narrate what the user is doing. Never describe environment variables unless they're causing an error. One sentence max.",
             ]
         ) { [weak self] result in
             if case .failure(let err) = result {
