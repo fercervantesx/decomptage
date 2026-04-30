@@ -30,6 +30,12 @@ struct ChatPaneView: View {
         .onChange(of: focusedSurface) { newSurface in
             viewModel.focusedSurface = newSurface?.surface
         }
+        .background(
+            // Hidden button to catch Cmd+Shift+K for manual share
+            Button("") { viewModel.manualShareContext() }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+                .hidden()
+        )
     }
 
     @State private var showSettings = false

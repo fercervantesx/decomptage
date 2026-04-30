@@ -98,6 +98,12 @@ final class ChatViewModel: ObservableObject {
         error = nil
     }
 
+    /// Manually push current terminal content to sidecar (Cmd+Shift+K).
+    /// Forces an immediate context push regardless of debounce state.
+    func manualShareContext() {
+        contextCapture.manualShare()
+    }
+
     func send() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
