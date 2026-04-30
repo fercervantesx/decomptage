@@ -30,14 +30,25 @@ pub async fn run_agent_loop(
     out_tx: &mpsc::Sender<AgentToClient>,
     in_rx: &mut mpsc::Receiver<ClientToAgent>,
 ) {
-    // Inject terminal context as the first message if available
+    // Inject terminal context as the first message if available.
+    // Prioritize the BOTTOM of the screen (most recent output) by taking
+    // the last N lines if the content is too long.
     if !context_buffer.is_empty() {
-        let context = context_buffer.join("\n---\n");
+        let full_context = context_buffer.join("\n");
+        let lines: Vec<&str> = full_context.lines().collect();
+        let max_lines = 80;
+        let context = if lines.len() > max_lines {
+            // Keep the bottom (most recent) lines
+            lines[lines.len() - max_lines..].join("\n")
+        } else {
+            full_context
+        };
+
         let context_msg = ChatMessage {
             role: "user".to_string(),
             content: vec![ContentPart::Text {
                 text: format!(
-                    "[Terminal context - this is what's currently visible in my terminal.]\n\n```\n{}\n```",
+                    "[Terminal context - most recent terminal output (bottom of screen shown first):]\n\n```\n{}\n```",
                     context
                 ),
             }],
