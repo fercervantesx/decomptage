@@ -8,6 +8,15 @@ struct ChatMessage: Identifiable {
     var content: String
     var isStreaming: Bool = false
     var suggestedCommand: String?
+    var toolApproval: ToolApprovalInfo?
+}
+
+struct ToolApprovalInfo {
+    let toolCallId: String
+    let command: String
+    let explanation: String
+    let dangerLevel: String
+    var resolved: Bool = false
 }
 
 struct ProviderInfo: Identifiable, Hashable {
@@ -124,6 +133,54 @@ final class ChatViewModel: ObservableObject {
 
     var availableModels: [String] {
         providers.first(where: { $0.id == selectedProvider })?.models ?? []
+    }
+
+    // MARK: - Tool Actions
+
+    func approveToolCall(id: String) {
+        bridge.send(
+            method: "chat.tool_approval_response",
+            params: ["tool_call_id": id, "approved": true]
+        )
+        if let idx = messages.lastIndex(where: { $0.toolApproval?.toolCallId == id }) {
+            messages[idx].toolApproval?.resolved = true
+        }
+    }
+
+    func denyToolCall(id: String) {
+        bridge.send(
+            method: "chat.tool_approval_response",
+            params: ["tool_call_id": id, "approved": false]
+        )
+        if let idx = messages.lastIndex(where: { $0.toolApproval?.toolCallId == id }) {
+            messages[idx].toolApproval?.resolved = true
+            messages[idx].content = "(Command denied by user)"
+        }
+    }
+
+    private func readTerminalForTool() -> String {
+        guard let surface = focusedSurface else { return "" }
+        // Reuse the same read logic as ContextCapture
+        var text = ghostty_text_s()
+        let topLeft = ghostty_point_s(
+            tag: GHOSTTY_POINT_VIEWPORT,
+            coord: GHOSTTY_POINT_COORD_TOP_LEFT,
+            x: 0, y: 0
+        )
+        let bottomRight = ghostty_point_s(
+            tag: GHOSTTY_POINT_VIEWPORT,
+            coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
+            x: UInt32.max, y: UInt32.max
+        )
+        let sel = ghostty_selection_s(
+            top_left: topLeft,
+            bottom_right: bottomRight,
+            rectangle: false
+        )
+        guard ghostty_surface_read_text(surface, sel, &text) else { return "" }
+        defer { ghostty_surface_free_text(surface, &text) }
+        guard let ptr = text.text else { return "" }
+        return String(cString: ptr)
     }
 
     // MARK: - Auto-comment
@@ -266,6 +323,33 @@ final class ChatViewModel: ObservableObject {
                 if messages.last?.role == "assistant" {
                     messages[messages.count - 1].suggestedCommand = command
                 }
+            }
+
+        case "chat.tool_approval_request":
+            if let toolCallId = params["tool_call_id"] as? String,
+               let command = params["command"] as? String {
+                let explanation = params["explanation"] as? String ?? ""
+                let dangerLevel = params["danger_level"] as? String ?? "safe"
+                let approval = ToolApprovalInfo(
+                    toolCallId: toolCallId,
+                    command: command,
+                    explanation: explanation,
+                    dangerLevel: dangerLevel
+                )
+                messages.append(ChatMessage(
+                    role: "assistant",
+                    content: "",
+                    toolApproval: approval
+                ))
+            }
+
+        case "chat.read_terminal_request":
+            if let requestId = params["request_id"] as? String {
+                let text = readTerminalForTool()
+                bridge.send(
+                    method: "chat.read_terminal_response",
+                    params: ["request_id": requestId, "text": text]
+                )
             }
 
         default:

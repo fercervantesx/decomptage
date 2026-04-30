@@ -157,6 +157,18 @@ struct ChatPaneView: View {
                     ForEach(viewModel.messages) { message in
                         MessageBubble(message: message)
                             .id(message.id)
+
+                        if let approval = message.toolApproval, !approval.resolved {
+                            ToolApprovalCard(
+                                toolCallId: approval.toolCallId,
+                                command: approval.command,
+                                explanation: approval.explanation,
+                                dangerLevel: approval.dangerLevel,
+                                onApprove: { viewModel.approveToolCall(id: approval.toolCallId) },
+                                onDeny: { viewModel.denyToolCall(id: approval.toolCallId) }
+                            )
+                            .padding(.horizontal, 10)
+                        }
                     }
 
                     if let error = viewModel.error {
@@ -241,6 +253,7 @@ private struct MessageBubble: View {
             if let command = message.suggestedCommand {
                 SuggestedCommandCard(command: command)
             }
+
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
