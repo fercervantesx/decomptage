@@ -181,6 +181,18 @@ class BaseTerminalController: NSWindowController,
             name: .ghosttyMaximizeDidToggle,
             object: nil)
 
+        // Copilot keybind actions (decomptage fork)
+        center.addObserver(
+            self,
+            selector: #selector(copilotToggleAction),
+            name: .copilotToggle,
+            object: nil)
+        center.addObserver(
+            self,
+            selector: #selector(copilotManualShareAction),
+            name: .copilotManualShare,
+            object: nil)
+
         // Splits
         center.addObserver(
             self,
@@ -1547,10 +1559,26 @@ extension BaseTerminalController {
     }
 }
 
+// MARK: Copilot Actions
+
+extension BaseTerminalController {
+    @objc func copilotToggleAction() {
+        chatLayout.toggle()
+    }
+
+    @objc func copilotManualShareAction() {
+        // Post to the chat view model via a notification that ChatPaneView observes
+        NotificationCenter.default.post(name: .copilotDoManualShare, object: nil)
+    }
+}
+
 // MARK: Notifications
 
 extension Notification.Name {
     /// Terminal window aggregate bell state changed.
     static let terminalWindowBellDidChangeNotification = Notification.Name("com.fercervantes.decomptage.terminalWindowBellDidChange")
     static let terminalWindowHasBellKey = terminalWindowBellDidChangeNotification.rawValue + ".hasBell"
+
+    /// Internal: triggers manual share from keybind to chat view model
+    static let copilotDoManualShare = Notification.Name("com.fercervantes.decomptage.copilotDoManualShare")
 }

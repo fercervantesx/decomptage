@@ -30,12 +30,9 @@ struct ChatPaneView: View {
         .onChange(of: focusedSurface) { newSurface in
             viewModel.focusedSurface = newSurface?.surface
         }
-        .background(
-            // Hidden button to catch Cmd+Shift+K for manual share
-            Button("") { viewModel.manualShareContext() }
-                .keyboardShortcut("k", modifiers: [.command, .shift])
-                .hidden()
-        )
+        .onReceive(NotificationCenter.default.publisher(for: .copilotDoManualShare)) { _ in
+            viewModel.manualShareContext()
+        }
     }
 
     @State private var showSettings = false
@@ -204,14 +201,24 @@ struct ChatPaneView: View {
     // MARK: - Input
 
     private var inputArea: some View {
-        HStack(spacing: 6) {
-            TextField("Ask the copilot...", text: $viewModel.inputText)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12))
-                .onSubmit {
-                    viewModel.send()
+        HStack(alignment: .bottom, spacing: 6) {
+            ZStack(alignment: .topLeading) {
+                // Placeholder
+                if viewModel.inputText.isEmpty {
+                    Text("Ask the copilot...")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 4)
+                        .padding(.vertical, 6)
                 }
-                .disabled(viewModel.isStreaming)
+
+                TextEditor(text: $viewModel.inputText)
+                    .font(.system(size: 12))
+                    .scrollContentBackground(.hidden)
+                    .frame(minHeight: 20, maxHeight: 120)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .disabled(viewModel.isStreaming)
+            }
 
             Button {
                 viewModel.send()

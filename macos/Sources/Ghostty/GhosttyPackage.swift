@@ -449,5 +449,13 @@ extension Ghostty.Notification {
     static let KeyTableKey = didChangeKeyTable.rawValue + ".action"
 }
 
+// MARK: Copilot Notifications (decomptage fork)
+
+extension Notification.Name {
+    static let copilotToggle = Notification.Name("com.fercervantes.decomptage.copilotToggle")
+    static let copilotFocus = Notification.Name("com.fercervantes.decomptage.copilotFocus")
+    static let copilotManualShare = Notification.Name("com.fercervantes.decomptage.copilotManualShare")
+}
+
 // Make the input enum hashable.
 extension ghostty_input_key_e: @retroactive Hashable {}

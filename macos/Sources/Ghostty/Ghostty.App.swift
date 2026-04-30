@@ -671,6 +671,14 @@ extension Ghostty {
                 return showChildExited(app, target: target, v: action.action.child_exited)
             case GHOSTTY_ACTION_COPY_TITLE_TO_CLIPBOARD:
                 return copyTitleToClipboard(app, target: target)
+
+            case GHOSTTY_ACTION_TOGGLE_COPILOT:
+                NotificationCenter.default.post(name: .copilotToggle, object: nil)
+            case GHOSTTY_ACTION_FOCUS_COPILOT:
+                NotificationCenter.default.post(name: .copilotFocus, object: nil)
+            case GHOSTTY_ACTION_COPILOT_MANUAL_SHARE:
+                NotificationCenter.default.post(name: .copilotManualShare, object: nil)
+
             default:
                 Ghostty.logger.warning("unknown action action=\(action.tag.rawValue)")
                 return false
